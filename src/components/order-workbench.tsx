@@ -307,6 +307,11 @@ export function OrderWorkbench() {
   }
 
   async function handleSubmit() {
+    if (draftRows.length === 0) {
+      setToast({ kind: "info", message: "当前没有可提交的数据" });
+      return;
+    }
+
     if (validationState.allErrors.length > 0) {
       setToast({ kind: "error", message: "存在校验错误，无法提交" });
       return;
@@ -349,6 +354,23 @@ export function OrderWorkbench() {
           kind: failedTotal ? "info" : "success",
           message: `提交完成：成功 ${successTotal} 条，失败 ${failedTotal} 条，分 ${batches.length} 批提交`,
         });
+
+        if (failedTotal === 0) {
+          setSelectedFileName("");
+          setParseResult(null);
+          setMapping({});
+          setDraftRows([]);
+          setExistingCodes([]);
+          setImportProgress({ completed: 0, total: 0 });
+          setSubmitProgress({ completed: 0, total: 0 });
+          setTableScrollTop(0);
+          if (tableShellRef.current) {
+            tableShellRef.current.scrollTop = 0;
+          }
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+        }
 
         await refreshHistory(1, historyKeyword, historyDate);
       } catch (error) {
@@ -677,7 +699,12 @@ export function OrderWorkbench() {
             <h2>3. 提交下单</h2>
             <p>有错误时禁止提交，提交完成后返回成功/失败汇总。</p>
           </div>
-          <button className="primary-button" type="button" onClick={handleSubmit} disabled={isSubmitting}>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={handleSubmit}
+            disabled={isSubmitting || draftRows.length === 0}
+          >
             提交下单
           </button>
         </div>
