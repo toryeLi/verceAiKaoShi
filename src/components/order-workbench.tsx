@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
 
@@ -8,6 +8,7 @@ import { loadSavedMapping, saveMapping } from "@/lib/template-memory";
 import type { ColumnMapping, OrderDraft, OrderHistoryItem, ParseResult } from "@/types/order";
 
 const PAGE_SIZE = 10;
+const SUBMIT_BATCH_SIZE = 200;
 const VIRTUAL_ROW_HEIGHT = 98;
 const VIRTUAL_OVERSCAN = 8;
 
@@ -46,6 +47,16 @@ function buildValidationMap(rows: ReturnType<typeof validateDrafts>["validations
   });
 
   return map;
+}
+
+function splitIntoBatches<T>(items: T[], batchSize: number) {
+  const batches: T[][] = [];
+
+  for (let index = 0; index < items.length; index += batchSize) {
+    batches.push(items.slice(index, index + batchSize));
+  }
+
+  return batches;
 }
 
 export function OrderWorkbench() {
@@ -88,6 +99,7 @@ export function OrderWorkbench() {
   );
 
   const invalidRowCount = validationState.validations.filter((item) => item.errors.length > 0).length;
+  const errorCount = validationState.allErrors.length;
 
   const virtualRange = useMemo(() => {
     if (draftRows.length <= 80) {
@@ -302,29 +314,39 @@ export function OrderWorkbench() {
     startSubmitting(async () => {
       try {
         const orders = castDraftsToOrders(draftRows);
+        const batches = splitIntoBatches(orders, SUBMIT_BATCH_SIZE);
+        let completed = 0;
+        let successTotal = 0;
+        let failedTotal = 0;
+
         setSubmitProgress({ completed: 0, total: orders.length });
 
-        const response = await fetch("/api/orders", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ orders }),
-        });
+        for (const [index, batch] of batches.entries()) {
+          const response = await fetch("/api/orders", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ orders: batch }),
+          });
 
-        const data = (await response.json()) as {
-          message?: string;
-          success?: number;
-          failed?: number;
-        };
+          const data = (await response.json()) as {
+            message?: string;
+            success?: number;
+            failed?: number;
+          };
 
-        setSubmitProgress({ completed: orders.length, total: orders.length });
+          if (!response.ok) {
+            throw new Error(data.message ?? `第 ${index + 1} 批提交失败`);
+          }
 
-        if (!response.ok) {
-          throw new Error(data.message ?? "提交失败");
+          completed += batch.length;
+          successTotal += data.success ?? 0;
+          failedTotal += data.failed ?? 0;
+          setSubmitProgress({ completed, total: orders.length });
         }
 
         setToast({
-          kind: data.failed ? "info" : "success",
-          message: `提交完成：成功 ${data.success ?? 0} 条，失败 ${data.failed ?? 0} 条`,
+          kind: failedTotal ? "info" : "success",
+          message: `提交完成：成功 ${successTotal} 条，失败 ${failedTotal} 条，分 ${batches.length} 批提交`,
         });
 
         await refreshHistory(1, historyKeyword, historyDate);
@@ -602,11 +624,16 @@ export function OrderWorkbench() {
           {validationState.allErrors.length === 0 ? (
             <p className="muted-text">当前没有错误。</p>
           ) : (
-            <ul>
-              {validationState.allErrors.map((message) => (
-                <li key={message}>{message}</li>
-              ))}
-            </ul>
+            <div className="error-board-body">
+              <div className="error-board-summary">
+                共 {errorCount} 条错误，涉及 {invalidRowCount} 行
+              </div>
+              <ul>
+                {validationState.allErrors.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       </section>

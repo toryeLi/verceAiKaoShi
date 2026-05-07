@@ -1,8 +1,10 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
+
 /node_modules
 /node_modules_broken_1778148633
+/doc
 /考试要求.md
 /.pnp
 .pnp.*

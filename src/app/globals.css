@@ -369,6 +369,19 @@ a {
   margin-bottom: 12px;
 }
 
+.error-board-summary {
+  color: var(--muted);
+  font-size: 0.92rem;
+  margin-bottom: 10px;
+}
+
+.error-board-body {
+  max-height: 300px;
+  overflow: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
 .error-board ul {
   display: grid;
   gap: 8px;
