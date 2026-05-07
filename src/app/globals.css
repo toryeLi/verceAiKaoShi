@@ -187,7 +187,8 @@ a {
 }
 
 .primary-button:disabled,
-.ghost-button:disabled {
+.ghost-button:disabled,
+.danger-link:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   transform: none;

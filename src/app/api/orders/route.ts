@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { insertOrders } from "@/lib/orders-repository";
+import { deleteAllOrders, insertOrders } from "@/lib/orders-repository";
 import { orderBatchSchema } from "@/lib/orders";
 
 export async function POST(request: NextRequest) {
@@ -16,6 +16,16 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await insertOrders(parsed.data.orders);
+    return NextResponse.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "服务端异常";
+    return NextResponse.json({ message }, { status: 500 });
+  }
+}
+
+export async function DELETE() {
+  try {
+    const result = await deleteAllOrders();
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "服务端异常";

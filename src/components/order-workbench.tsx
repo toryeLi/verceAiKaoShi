@@ -77,6 +77,7 @@ export function OrderWorkbench() {
   const [historyPage, setHistoryPage] = useState(1);
   const [historyKeyword, setHistoryKeyword] = useState("");
   const [historyDate, setHistoryDate] = useState("");
+  const [isDeletingAllOrders, setIsDeletingAllOrders] = useState(false);
   const [tableScrollTop, setTableScrollTop] = useState(0);
   const [tableViewportHeight, setTableViewportHeight] = useState(640);
 
@@ -355,6 +356,38 @@ export function OrderWorkbench() {
         setToast({ kind: "error", message });
       }
     });
+  }
+
+  async function handleDeleteAllImportedOrders() {
+    const confirmed = window.confirm("确定要删除所有已导入运单数据吗？此操作不可恢复。");
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingAllOrders(true);
+    try {
+      const response = await fetch("/api/orders", {
+        method: "DELETE",
+      });
+
+      const data = (await response.json()) as {
+        message?: string;
+        deleted?: number;
+      };
+
+      if (!response.ok) {
+        throw new Error(data.message ?? "清空失败");
+      }
+
+      setHistoryPage(1);
+      await refreshHistory(1, historyKeyword, historyDate);
+      setToast({ kind: "success", message: `已删除 ${data.deleted ?? 0} 条已导入运单` });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "清空失败";
+      setToast({ kind: "error", message });
+    } finally {
+      setIsDeletingAllOrders(false);
+    }
   }
 
   const historyTotalPages = historyTotal > 0 ? Math.ceil(historyTotal / PAGE_SIZE) : 0;
@@ -693,8 +726,17 @@ export function OrderWorkbench() {
               className="ghost-button"
               type="button"
               onClick={() => void refreshHistory(1, historyKeyword, historyDate)}
+              disabled={isDeletingAllOrders}
             >
               搜索
+            </button>
+            <button
+              className="danger-link"
+              type="button"
+              onClick={() => void handleDeleteAllImportedOrders()}
+              disabled={isDeletingAllOrders || historyTotal === 0}
+            >
+              {isDeletingAllOrders ? "清空中..." : "删除全部已导入运单"}
             </button>
           </div>
         </div>

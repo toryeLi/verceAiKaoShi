@@ -79,6 +79,22 @@ export async function insertOrders(orders: ImportedOrder[]) {
   return { success, failed, failures };
 }
 
+export async function deleteAllOrders() {
+  const sql = getDb();
+  if (!sql) {
+    throw new Error("未配置 DATABASE_URL，无法删除数据。");
+  }
+
+  await ensureOrdersTable();
+
+  const result = await sql<{ record_id: string }[]>`
+    delete from orders
+    returning record_id
+  `;
+
+  return { deleted: result.length };
+}
+
 export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQuery) {
   const sql = getDb();
   if (!sql) {
