@@ -37,7 +37,7 @@ const headerAliasEntries: Array<[OrderFieldKey, string[]]> = [
   ["receiverName", ["收件人姓名", "收件人", "收货人", "receiver"]],
   ["receiverPhone", ["收件人电话", "收件电话", "收货电话", "receiver tel", "receiver phone"]],
   ["receiverAddress", ["收件人地址", "收件地址", "收货地址", "receiver address"]],
-  ["weight", ["重量(kg)", "重量", "weight(kg)", "weight", "重量kg", "重量(KG)"]],
+  ["weight", ["重量(kg)", "重量", "重量(KG)", "weight(kg)", "weight", "重量kg"]],
   ["quantity", ["件数", "数量", "qty", "package qty"]],
   ["tempZone", ["温层", "温度要求", "temp zone", "temperature zone"]],
   ["note", ["备注", "附言", "note", "remark"]],
@@ -159,8 +159,7 @@ export function validateDrafts(
         continue;
       }
 
-      const value = draft[field.key].trim();
-      if (!value) {
+      if (!draft[field.key].trim()) {
         errors.push({ field: field.key, message: `${field.label}不能为空` });
       }
     }

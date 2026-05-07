@@ -10,13 +10,14 @@ import {
 } from "@/lib/orders";
 import type { ColumnMapping, OrderDraft, ParseResult } from "@/types/order";
 
+const PARSE_CHUNK_SIZE = 200;
+
 function readWorkbook(file: File) {
   return new Promise<XLSX.WorkBook>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const workbook = XLSX.read(reader.result, { type: "array" });
-        resolve(workbook);
+        resolve(XLSX.read(reader.result, { type: "array" }));
       } catch (error) {
         reject(error);
       }
@@ -32,8 +33,7 @@ function scoreHeaderRow(row: unknown[]) {
     if (!value) {
       return score;
     }
-    const mapping = buildAutoMapping([value]);
-    return score + (Object.keys(mapping).length > 0 ? 1 : 0);
+    return score + (Object.keys(buildAutoMapping([value])).length > 0 ? 1 : 0);
   }, 0);
 }
 
@@ -66,7 +66,7 @@ function findBestSheetAndHeader(workbook: XLSX.WorkBook) {
   return best;
 }
 
-function buildRowsFromMapping(
+function buildRowsFromMappingSync(
   sourceRows: unknown[][],
   headers: string[],
   mapping: ColumnMapping,
@@ -94,19 +94,65 @@ function buildRowsFromMapping(
       draft[field as keyof OrderDraft] = String(row[columnIndex] ?? "").trim() as never;
     }
 
-    if (!hasMeaningfulDraftValue(draft)) {
-      continue;
+    if (hasMeaningfulDraftValue(draft)) {
+      drafts.push(draft);
+    }
+  }
+
+  return drafts;
+}
+
+async function buildRowsFromMappingAsync(
+  sourceRows: unknown[][],
+  headers: string[],
+  mapping: ColumnMapping,
+  headerRowIndex: number,
+  onProgress?: (completed: number, total: number) => void,
+) {
+  const drafts: OrderDraft[] = [];
+  const headerIndexMap = new Map<string, number>();
+  const total = Math.max(0, sourceRows.length - headerRowIndex - 1);
+
+  headers.forEach((header, index) => {
+    headerIndexMap.set(header, index);
+  });
+
+  let processed = 0;
+
+  for (let rowIndex = headerRowIndex + 1; rowIndex < sourceRows.length; rowIndex += 1) {
+    const row = sourceRows[rowIndex] ?? [];
+    const draft = makeEmptyDraft(rowIndex + 1);
+
+    for (const [field, header] of Object.entries(mapping)) {
+      if (!header) {
+        continue;
+      }
+      const columnIndex = headerIndexMap.get(header);
+      if (columnIndex === undefined) {
+        continue;
+      }
+      draft[field as keyof OrderDraft] = String(row[columnIndex] ?? "").trim() as never;
     }
 
-    drafts.push(draft);
+    if (hasMeaningfulDraftValue(draft)) {
+      drafts.push(draft);
+    }
+
+    processed += 1;
+
+    if (processed % PARSE_CHUNK_SIZE === 0) {
+      onProgress?.(processed, total);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
   }
+
+  onProgress?.(total, total);
 
   return drafts;
 }
 
 export async function parseExcelFile(
   file: File,
-  savedMapping?: ColumnMapping,
   onProgress?: (completed: number, total: number) => void,
 ): Promise<ParseResult> {
   if (!/\.(xlsx|xls)$/i.test(file.name)) {
@@ -119,19 +165,8 @@ export async function parseExcelFile(
     String(cell ?? "").trim() || `未命名列${index + 1}`,
   );
 
-  const autoMapping = buildAutoMapping(headers);
-  const mapping = { ...autoMapping, ...savedMapping };
-  const rawDrafts = buildRowsFromMapping(rows, headers, mapping, headerRowIndex);
-  const total = rawDrafts.length;
-  const parsedRows: OrderDraft[] = [];
-
-  for (let index = 0; index < rawDrafts.length; index += 1) {
-    parsedRows.push(rawDrafts[index]);
-    onProgress?.(index + 1, total);
-    if ((index + 1) % 100 === 0) {
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    }
-  }
+  const mapping = buildAutoMapping(headers);
+  const parsedRows = await buildRowsFromMappingAsync(rows, headers, mapping, headerRowIndex, onProgress);
 
   return {
     fileName: file.name,
@@ -151,10 +186,10 @@ export function remapDraftRows(
   mapping: ColumnMapping,
   headerRowIndex: number,
 ) {
-  return buildRowsFromMapping(rows, headers, mapping, headerRowIndex);
+  return buildRowsFromMappingSync(rows, headers, mapping, headerRowIndex);
 }
 
-export async function exportDraftsToExcel(rows: OrderDraft[]) {
+export function exportDraftsToExcel(rows: OrderDraft[]) {
   const headerLabels = [
     "外部编码",
     "发件人姓名",

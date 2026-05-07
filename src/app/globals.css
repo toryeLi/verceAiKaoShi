@@ -140,6 +140,19 @@ a {
   flex-wrap: wrap;
 }
 
+.pagination-meta {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.92rem;
+  margin-right: auto;
+}
+
+.pagination > span {
+  display: none;
+}
+
 .primary-button,
 .ghost-button,
 .danger-link {
@@ -279,6 +292,10 @@ a {
   border-radius: 18px;
 }
 
+.virtual-shell {
+  max-height: 72vh;
+}
+
 .order-table,
 .history-table {
   width: 100%;
@@ -299,6 +316,12 @@ a {
   padding: 10px 12px;
   vertical-align: top;
   text-align: left;
+}
+
+.virtual-spacer td {
+  padding: 0;
+  border-bottom: none;
+  background: transparent;
 }
 
 .order-table thead th,

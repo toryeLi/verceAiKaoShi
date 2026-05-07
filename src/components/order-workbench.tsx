@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
 
-import { exportDraftsToExcel, parseExcelFile } from "@/lib/excel";
-import { castDraftsToOrders, hasMeaningfulDraftValue, ORDER_FIELDS, validateDrafts } from "@/lib/orders";
+import { exportDraftsToExcel, parseExcelFile, remapDraftRows } from "@/lib/excel";
+import { castDraftsToOrders, ORDER_FIELDS, validateDrafts } from "@/lib/orders";
 import { loadSavedMapping, saveMapping } from "@/lib/template-memory";
 import type { ColumnMapping, OrderDraft, OrderHistoryItem, ParseResult } from "@/types/order";
 
 const PAGE_SIZE = 10;
+const VIRTUAL_ROW_HEIGHT = 98;
+const VIRTUAL_OVERSCAN = 8;
 
 type Toast = {
   kind: "success" | "error" | "info";
@@ -48,6 +50,9 @@ function buildValidationMap(rows: ReturnType<typeof validateDrafts>["validations
 
 export function OrderWorkbench() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const duplicateCheckTimerRef = useRef<number | null>(null);
+  const tableShellRef = useRef<HTMLDivElement | null>(null);
+
   const [selectedFileName, setSelectedFileName] = useState("");
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [draftRows, setDraftRows] = useState<OrderDraft[]>([]);
@@ -56,18 +61,25 @@ export function OrderWorkbench() {
   const [submitProgress, setSubmitProgress] = useState({ completed: 0, total: 0 });
   const [existingCodes, setExistingCodes] = useState<string[]>([]);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [isParsing, startParsing] = useTransition();
-  const [isSubmitting, startSubmitting] = useTransition();
   const [history, setHistory] = useState<OrderHistoryItem[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyPage, setHistoryPage] = useState(1);
   const [historyKeyword, setHistoryKeyword] = useState("");
   const [historyDate, setHistoryDate] = useState("");
+  const [tableScrollTop, setTableScrollTop] = useState(0);
+  const [tableViewportHeight, setTableViewportHeight] = useState(640);
+
+  const [isParsing, startParsing] = useTransition();
+  const [isSubmitting, startSubmitting] = useTransition();
   const [isHistoryLoading, startHistoryLoading] = useTransition();
+  const [isTablePending, startTableTransition] = useTransition();
+
+  const deferredDraftRows = useDeferredValue(draftRows);
+  const deferredExistingCodes = useDeferredValue(existingCodes);
 
   const validationState = useMemo(
-    () => validateDrafts(draftRows, existingCodes),
-    [draftRows, existingCodes],
+    () => validateDrafts(deferredDraftRows, deferredExistingCodes),
+    [deferredDraftRows, deferredExistingCodes],
   );
 
   const validationMap = useMemo(
@@ -76,6 +88,36 @@ export function OrderWorkbench() {
   );
 
   const invalidRowCount = validationState.validations.filter((item) => item.errors.length > 0).length;
+
+  const virtualRange = useMemo(() => {
+    if (draftRows.length <= 80) {
+      return {
+        start: 0,
+        end: draftRows.length,
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+      };
+    }
+
+    const visibleCount = Math.ceil(tableViewportHeight / VIRTUAL_ROW_HEIGHT);
+    const start = Math.max(0, Math.floor(tableScrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN);
+    const end = Math.min(
+      draftRows.length,
+      start + visibleCount + VIRTUAL_OVERSCAN * 2,
+    );
+
+    return {
+      start,
+      end,
+      topSpacerHeight: start * VIRTUAL_ROW_HEIGHT,
+      bottomSpacerHeight: (draftRows.length - end) * VIRTUAL_ROW_HEIGHT,
+    };
+  }, [draftRows.length, tableScrollTop, tableViewportHeight]);
+
+  const visibleRows = useMemo(
+    () => draftRows.slice(virtualRange.start, virtualRange.end),
+    [draftRows, virtualRange.end, virtualRange.start],
+  );
 
   useEffect(() => {
     if (!toast) {
@@ -92,17 +134,34 @@ export function OrderWorkbench() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const codes = draftRows.map((row) => row.externalCode.trim()).filter(Boolean);
+    const container = tableShellRef.current;
+    if (!container) {
+      return undefined;
+    }
+
+    const updateSize = () => {
+      setTableViewportHeight(container.clientHeight || 640);
+    };
+
+    updateSize();
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, []);
+
+  function scheduleDuplicateCheck(rows: OrderDraft[]) {
+    if (duplicateCheckTimerRef.current) {
+      window.clearTimeout(duplicateCheckTimerRef.current);
+    }
+
+    duplicateCheckTimerRef.current = window.setTimeout(() => {
+      const codes = rows.map((row) => row.externalCode.trim()).filter(Boolean);
       if (codes.length === 0) {
         setExistingCodes([]);
         return;
       }
       void queryExistingCodes(codes);
-    }, 300);
-
-    return () => window.clearTimeout(timer);
-  }, [draftRows]);
+    }, 400);
+  }
 
   async function refreshHistory(page = historyPage, keyword = historyKeyword, date = historyDate) {
     startHistoryLoading(async () => {
@@ -125,11 +184,6 @@ export function OrderWorkbench() {
   }
 
   async function queryExistingCodes(codes: string[]) {
-    if (codes.length === 0) {
-      setExistingCodes([]);
-      return;
-    }
-
     try {
       const response = await fetch("/api/orders/duplicates", {
         method: "POST",
@@ -149,69 +203,71 @@ export function OrderWorkbench() {
 
     startParsing(async () => {
       try {
-        const memoryProbe = await parseExcelFile(file);
-        const savedMapping = loadSavedMapping(memoryProbe.templateFingerprint);
-        const result = await parseExcelFile(file, savedMapping, (completed, total) => {
+        const parsed = await parseExcelFile(file, (completed, total) => {
           setImportProgress({ completed, total });
         });
 
-        setParseResult(result);
-        setMapping(result.mapping);
-        setDraftRows(result.rows);
+        const savedMapping = loadSavedMapping(parsed.templateFingerprint);
+        const finalMapping = savedMapping ? { ...parsed.mapping, ...savedMapping } : parsed.mapping;
+        const finalRows = savedMapping
+          ? remapDraftRows(parsed.headers, parsed.sourceRows, finalMapping, parsed.headerRowIndex)
+          : parsed.rows;
+
+        const finalResult: ParseResult = {
+          ...parsed,
+          mapping: finalMapping,
+          rows: finalRows,
+        };
+
+        setParseResult(finalResult);
+        setMapping(finalMapping);
+        startTableTransition(() => {
+          setDraftRows(finalRows);
+        });
+        setTableScrollTop(0);
+        if (tableShellRef.current) {
+          tableShellRef.current.scrollTop = 0;
+        }
+        scheduleDuplicateCheck(finalRows);
+
         setToast({
           kind: "success",
-          message: `已导入 ${result.rows.length} 行，Sheet：${result.detectedSheetName}`,
+          message: `已导入 ${finalRows.length} 行，Sheet：${finalResult.detectedSheetName}`,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "文件解析失败";
         setToast({ kind: "error", message });
         setParseResult(null);
         setDraftRows([]);
+        setExistingCodes([]);
       }
     });
   }
 
   function updateDraft(rowId: string, field: keyof OrderDraft, value: string) {
-    setDraftRows((current) =>
-      current.map((row) => (row.id === rowId ? { ...row, [field]: value } : row)),
-    );
+    setDraftRows((current) => {
+      const next = current.map((row) => (row.id === rowId ? { ...row, [field]: value } : row));
+      if (field === "externalCode") {
+        scheduleDuplicateCheck(next);
+      }
+      return next;
+    });
   }
 
   function addBlankRow() {
-    setDraftRows((current) => [...current, makeBlankRow(current.length + 1)]);
+    setDraftRows((current) => {
+      const next = [...current, makeBlankRow(current.length + 1)];
+      scheduleDuplicateCheck(next);
+      return next;
+    });
   }
 
   function removeRow(rowId: string) {
-    setDraftRows((current) => current.filter((row) => row.id !== rowId));
-  }
-
-  function rebuildRowsFromParse(result: ParseResult, nextMapping: ColumnMapping) {
-    const headerIndexMap = new Map<string, number>();
-    result.headers.forEach((header, index) => headerIndexMap.set(header, index));
-
-    const rows: OrderDraft[] = [];
-
-    for (let rowIndex = result.headerRowIndex + 1; rowIndex < result.sourceRows.length; rowIndex += 1) {
-      const source = result.sourceRows[rowIndex] ?? [];
-      const draft = makeBlankRow(rowIndex + 1);
-
-      for (const [field, header] of Object.entries(nextMapping)) {
-        if (!header) {
-          continue;
-        }
-        const index = headerIndexMap.get(header);
-        if (index === undefined) {
-          continue;
-        }
-        draft[field as keyof OrderDraft] = String(source[index] ?? "").trim() as never;
-      }
-
-      if (hasMeaningfulDraftValue(draft)) {
-        rows.push(draft);
-      }
-    }
-
-    return rows;
+    setDraftRows((current) => {
+      const next = current.filter((row) => row.id !== rowId);
+      scheduleDuplicateCheck(next);
+      return next;
+    });
   }
 
   function handleMappingChange(field: keyof ColumnMapping, header: string) {
@@ -220,11 +276,20 @@ export function OrderWorkbench() {
     }
 
     const nextMapping = { ...mapping, [field]: header || undefined };
+    const parsedRows = remapDraftRows(
+      parseResult.headers,
+      parseResult.sourceRows,
+      nextMapping,
+      parseResult.headerRowIndex,
+    );
+
     setMapping(nextMapping);
     saveMapping(parseResult.templateFingerprint, nextMapping);
 
-    const parsedRows = rebuildRowsFromParse(parseResult, nextMapping);
-    setDraftRows(parsedRows);
+    startTableTransition(() => {
+      setDraftRows(parsedRows);
+    });
+    scheduleDuplicateCheck(parsedRows);
     setToast({ kind: "info", message: "映射已更新，并写入模板记忆" });
   }
 
@@ -249,7 +314,6 @@ export function OrderWorkbench() {
           message?: string;
           success?: number;
           failed?: number;
-          failures?: string[];
         };
 
         setSubmitProgress({ completed: orders.length, total: orders.length });
@@ -271,7 +335,8 @@ export function OrderWorkbench() {
     });
   }
 
-  const historyTotalPages = Math.max(1, Math.ceil(historyTotal / PAGE_SIZE));
+  const historyTotalPages = historyTotal > 0 ? Math.ceil(historyTotal / PAGE_SIZE) : 0;
+  const historyDisplayPage = historyTotalPages === 0 ? 0 : historyPage;
 
   return (
     <div className="page-shell">
@@ -409,9 +474,13 @@ export function OrderWorkbench() {
         <div className="panel-header">
           <div>
             <h2>2. 预览与编辑</h2>
-            <p>固定表头、横向滚动、单元格即点即改，并实时校验。</p>
+            <p>使用虚拟滚动，仅渲染可视区行，避免 1000+ 行导致页面冻结。</p>
           </div>
           <div className="button-row">
+            <span className="muted-text">
+              当前渲染 {visibleRows.length} / 总计 {draftRows.length} 行
+              {isTablePending ? " · 更新中" : ""}
+            </span>
             <button className="ghost-button" type="button" onClick={addBlankRow}>
               新增空行
             </button>
@@ -419,14 +488,18 @@ export function OrderWorkbench() {
               className="ghost-button"
               type="button"
               disabled={draftRows.length === 0}
-              onClick={() => void exportDraftsToExcel(draftRows)}
+              onClick={() => exportDraftsToExcel(draftRows)}
             >
               导出 Excel
             </button>
           </div>
         </div>
 
-        <div className="table-shell">
+        <div
+          ref={tableShellRef}
+          className="table-shell virtual-shell"
+          onScroll={(event) => setTableScrollTop(event.currentTarget.scrollTop)}
+        >
           <table className="order-table">
             <thead>
               <tr>
@@ -445,56 +518,77 @@ export function OrderWorkbench() {
                   </td>
                 </tr>
               ) : (
-                draftRows.map((row, index) => {
-                  const rowErrors = validationMap.get(row.id) ?? new Map<string, string>();
-
-                  return (
-                    <tr key={row.id} className={rowErrors.size > 0 ? "row-error" : ""}>
-                      <td>{row.originalRowNumber || index + 1}</td>
-                      {ORDER_FIELDS.map((field) => {
-                        const error = rowErrors.get(field.key);
-                        const value = row[field.key];
-                        const isTempZone = field.key === "tempZone";
-
-                        return (
-                          <td key={field.key}>
-                            {isTempZone ? (
-                              <select
-                                className={error ? "cell-input input-error" : "cell-input"}
-                                value={value}
-                                onChange={(event) =>
-                                  updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
-                                }
-                                title={error}
-                              >
-                                <option value="">请选择</option>
-                                <option value="常温">常温</option>
-                                <option value="冷藏">冷藏</option>
-                                <option value="冷冻">冷冻</option>
-                              </select>
-                            ) : (
-                              <input
-                                className={error ? "cell-input input-error" : "cell-input"}
-                                value={value}
-                                title={error}
-                                placeholder={field.placeholder}
-                                onChange={(event) =>
-                                  updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
-                                }
-                              />
-                            )}
-                            {error ? <span className="inline-error">{error}</span> : null}
-                          </td>
-                        );
-                      })}
-                      <td>
-                        <button className="danger-link" type="button" onClick={() => removeRow(row.id)}>
-                          删除
-                        </button>
-                      </td>
+                <>
+                  {virtualRange.topSpacerHeight > 0 ? (
+                    <tr className="virtual-spacer">
+                      <td
+                        colSpan={ORDER_FIELDS.length + 2}
+                        style={{ height: virtualRange.topSpacerHeight }}
+                      />
                     </tr>
-                  );
-                })
+                  ) : null}
+
+                  {visibleRows.map((row, index) => {
+                    const actualIndex = virtualRange.start + index;
+                    const rowErrors = validationMap.get(row.id) ?? new Map<string, string>();
+
+                    return (
+                      <tr key={row.id} className={rowErrors.size > 0 ? "row-error" : ""}>
+                        <td>{row.originalRowNumber || actualIndex + 1}</td>
+                        {ORDER_FIELDS.map((field) => {
+                          const error = rowErrors.get(field.key);
+                          const value = row[field.key];
+                          const isTempZone = field.key === "tempZone";
+
+                          return (
+                            <td key={field.key}>
+                              {isTempZone ? (
+                                <select
+                                  className={error ? "cell-input input-error" : "cell-input"}
+                                  value={value}
+                                  onChange={(event) =>
+                                    updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
+                                  }
+                                  title={error}
+                                >
+                                  <option value="">请选择</option>
+                                  <option value="常温">常温</option>
+                                  <option value="冷藏">冷藏</option>
+                                  <option value="冷冻">冷冻</option>
+                                </select>
+                              ) : (
+                                <input
+                                  className={error ? "cell-input input-error" : "cell-input"}
+                                  value={value}
+                                  title={error}
+                                  placeholder={field.placeholder}
+                                  onChange={(event) =>
+                                    updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
+                                  }
+                                />
+                              )}
+                              {error ? <span className="inline-error">{error}</span> : null}
+                            </td>
+                          );
+                        })}
+                        <td>
+                          <button className="danger-link" type="button" onClick={() => removeRow(row.id)}>
+                            删除
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {virtualRange.bottomSpacerHeight > 0 ? (
+                    <tr className="virtual-spacer">
+                      <td
+                        colSpan={ORDER_FIELDS.length + 2}
+                        style={{ height: virtualRange.bottomSpacerHeight }}
+                      />
+                    </tr>
+                  ) : null}
+                </>
               )}
             </tbody>
           </table>
@@ -503,7 +597,7 @@ export function OrderWorkbench() {
         <div className="error-board">
           <div className="error-board-head">
             <h3>全量错误列表</h3>
-            <span className="muted-text">实时同步当前所有错误，无需手动刷新</span>
+            <span className="muted-text">校验计算已延后到低优先级，输入时不再明显卡顿</span>
           </div>
           {validationState.allErrors.length === 0 ? (
             <p className="muted-text">当前没有错误。</p>
@@ -614,10 +708,15 @@ export function OrderWorkbench() {
         </div>
 
         <div className="pagination">
+          <div className="pagination-meta">
+            <span>共 {historyTotal} 条数据</span>
+            <span>第 {historyDisplayPage} / {historyTotalPages} 页</span>
+            <span>每页 {PAGE_SIZE} 条</span>
+          </div>
           <button
             className="ghost-button"
             type="button"
-            disabled={historyPage <= 1}
+            disabled={historyTotalPages === 0 || historyPage <= 1}
             onClick={() => void refreshHistory(historyPage - 1)}
           >
             上一页
@@ -628,7 +727,7 @@ export function OrderWorkbench() {
           <button
             className="ghost-button"
             type="button"
-            disabled={historyPage >= historyTotalPages}
+            disabled={historyTotalPages === 0 || historyPage >= historyTotalPages}
             onClick={() => void refreshHistory(historyPage + 1)}
           >
             下一页

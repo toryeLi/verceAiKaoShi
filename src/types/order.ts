@@ -51,11 +51,6 @@ export type ImportedOrder = Omit<
   tempZone: TempZone;
 };
 
-export type MappingOption = {
-  value: string;
-  label: string;
-};
-
 export type ColumnMapping = Partial<Record<OrderFieldKey, string>>;
 
 export type ParseResult = {
