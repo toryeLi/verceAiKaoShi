@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getModelStatus, suggestRuleWithModel } from "@/lib/ai-rule-suggester";
-import { buildHeuristicSuggestion, extractDocument } from "@/lib/import-parser";
 
 export async function GET() {
   return NextResponse.json(getModelStatus());
@@ -16,6 +15,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ message: "缺少上传文件" }, { status: 400 });
     }
 
+    const { buildHeuristicSuggestion, extractDocument } = await import("@/lib/import-parser");
     const arrayBuffer = await file.arrayBuffer();
     const extracted = await extractDocument(file.name, arrayBuffer);
 

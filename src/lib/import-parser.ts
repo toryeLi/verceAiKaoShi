@@ -1,8 +1,8 @@
 import mammoth from "mammoth";
-import { PDFParse } from "pdf-parse";
 import * as XLSX from "xlsx";
 
 import { makeBlankDraft } from "@/lib/orders";
+import { loadPdfParse } from "@/lib/pdf-runtime";
 import type {
   ColumnMapping,
   ImportRule,
@@ -188,6 +188,7 @@ async function extractWordDocument(file: FilePayload): Promise<ExtractedDocument
 }
 
 async function extractPdfDocument(file: FilePayload): Promise<ExtractedDocument> {
+  const { PDFParse } = await loadPdfParse();
   const parser = new PDFParse({ data: new Uint8Array(file.buffer) });
   try {
     const result = await parser.getText({});
