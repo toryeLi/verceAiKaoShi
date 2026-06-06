@@ -1,37 +1,76 @@
-﻿"use client";
+"use client";
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
 
-import { exportDraftsToExcel, parseExcelFile, remapDraftRows } from "@/lib/excel";
-import { castDraftsToOrders, ORDER_FIELDS, validateDrafts } from "@/lib/orders";
-import { loadSavedMapping, saveMapping } from "@/lib/template-memory";
-import type { ColumnMapping, OrderDraft, OrderHistoryItem, ParseResult } from "@/types/order";
+import { exportDraftsToExcel } from "@/lib/excel";
+import { castDraftsToOrders, makeBlankDraft, ORDER_FIELDS, validateDrafts } from "@/lib/orders";
+import type {
+  ImportRule,
+  ModelStatus,
+  OrderDraft,
+  OrderHistoryItem,
+  ParseResult,
+  RuleSuggestion,
+  SupportedFileType,
+} from "@/types/order";
 
 const PAGE_SIZE = 10;
 const SUBMIT_BATCH_SIZE = 200;
-const VIRTUAL_ROW_HEIGHT = 98;
-const VIRTUAL_OVERSCAN = 8;
+const SUGGESTED_RULE_OPTION_ID = "__suggested_rule__";
 
 type Toast = {
   kind: "success" | "error" | "info";
   message: string;
 };
 
-function makeBlankRow(rowNumber: number): OrderDraft {
+type PreviewFailure = {
+  fileName: string;
+  fileType: SupportedFileType;
+  message: string;
+  ruleName: string;
+  ruleSource: ImportRule["source"];
+  previewText: string;
+};
+
+type RuleFormState = {
+  id?: string;
+  name: string;
+  description: string;
+  fileType: ImportRule["fileType"];
+  source: ImportRule["source"];
+  configText: string;
+};
+
+type WorkspaceSection = "rules" | "batch" | "history";
+
+function buildFormState(rule?: ImportRule): RuleFormState {
+  if (!rule) {
+    return {
+      name: "",
+      description: "",
+      fileType: "any",
+      source: "manual",
+      configText: JSON.stringify(
+        {
+          mode: "tabular",
+          sheetSelection: "best",
+          scanHeaderRows: 8,
+          ignoreKeywords: ["合计"],
+          rowEndKeywords: ["合计"],
+        },
+        null,
+        2,
+      ),
+    };
+  }
+
   return {
-    id: crypto.randomUUID(),
-    originalRowNumber: rowNumber,
-    externalCode: "",
-    senderName: "",
-    senderPhone: "",
-    senderAddress: "",
-    receiverName: "",
-    receiverPhone: "",
-    receiverAddress: "",
-    weight: "",
-    quantity: "",
-    tempZone: "",
-    note: "",
+    id: rule.id,
+    name: rule.name,
+    description: rule.description,
+    fileType: rule.fileType,
+    source: rule.source,
+    configText: JSON.stringify(rule.config, null, 2),
   };
 }
 
@@ -59,32 +98,66 @@ function splitIntoBatches<T>(items: T[], batchSize: number) {
   return batches;
 }
 
+function getSuggestedRuleFileType(fileName: string): SupportedFileType {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".xlsx") || lower.endsWith(".xls")) {
+    return "excel";
+  }
+  if (lower.endsWith(".docx")) {
+    return "word";
+  }
+  return "pdf";
+}
+
+function isSameRuleForm(left: RuleFormState, right: RuleFormState) {
+  return (
+    (left.id ?? "") === (right.id ?? "") &&
+    left.name === right.name &&
+    left.description === right.description &&
+    left.fileType === right.fileType &&
+    left.source === right.source &&
+    left.configText === right.configText
+  );
+}
+
 export function OrderWorkbench() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const duplicateCheckTimerRef = useRef<number | null>(null);
-  const tableShellRef = useRef<HTMLDivElement | null>(null);
+  const ruleSelectTimerRef = useRef<number | null>(null);
 
-  const [selectedFileName, setSelectedFileName] = useState("");
-  const [parseResult, setParseResult] = useState<ParseResult | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewResult, setPreviewResult] = useState<ParseResult | null>(null);
+  const [previewFailure, setPreviewFailure] = useState<PreviewFailure | null>(null);
   const [draftRows, setDraftRows] = useState<OrderDraft[]>([]);
-  const [mapping, setMapping] = useState<ColumnMapping>({});
+  const [existingCodes, setExistingCodes] = useState<string[]>([]);
   const [importProgress, setImportProgress] = useState({ completed: 0, total: 0 });
   const [submitProgress, setSubmitProgress] = useState({ completed: 0, total: 0 });
-  const [existingCodes, setExistingCodes] = useState<string[]>([]);
   const [toast, setToast] = useState<Toast | null>(null);
+
+  const [rules, setRules] = useState<ImportRule[]>([]);
+  const [selectedRuleId, setSelectedRuleId] = useState("");
+  const [ruleForm, setRuleForm] = useState<RuleFormState>(buildFormState());
+  const [suggestion, setSuggestion] = useState<RuleSuggestion | null>(null);
+  const [suggestionPreviewRows, setSuggestionPreviewRows] = useState(0);
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
+  const [activeSection, setActiveSection] = useState<WorkspaceSection>("batch");
+
   const [history, setHistory] = useState<OrderHistoryItem[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyPage, setHistoryPage] = useState(1);
   const [historyKeyword, setHistoryKeyword] = useState("");
   const [historyDate, setHistoryDate] = useState("");
-  const [isDeletingAllOrders, setIsDeletingAllOrders] = useState(false);
-  const [tableScrollTop, setTableScrollTop] = useState(0);
-  const [tableViewportHeight, setTableViewportHeight] = useState(640);
 
   const [isParsing, startParsing] = useTransition();
   const [isSubmitting, startSubmitting] = useTransition();
+  const [isRulesLoading, startRulesLoading] = useTransition();
   const [isHistoryLoading, startHistoryLoading] = useTransition();
-  const [isTablePending, startTableTransition] = useTransition();
+  const [isSuggesting, startSuggesting] = useTransition();
+  const [isSavingRule, startSavingRule] = useTransition();
+  const [isDeletingRule, setIsDeletingRule] = useState(false);
+  const [isApplyingSuggestion, setIsApplyingSuggestion] = useState(false);
+  const [isDeletingAllOrders, setIsDeletingAllOrders] = useState(false);
+  const [isRuleSwitching, setIsRuleSwitching] = useState(false);
 
   const deferredDraftRows = useDeferredValue(draftRows);
   const deferredExistingCodes = useDeferredValue(existingCodes);
@@ -100,37 +173,6 @@ export function OrderWorkbench() {
   );
 
   const invalidRowCount = validationState.validations.filter((item) => item.errors.length > 0).length;
-  const errorCount = validationState.allErrors.length;
-
-  const virtualRange = useMemo(() => {
-    if (draftRows.length <= 80) {
-      return {
-        start: 0,
-        end: draftRows.length,
-        topSpacerHeight: 0,
-        bottomSpacerHeight: 0,
-      };
-    }
-
-    const visibleCount = Math.ceil(tableViewportHeight / VIRTUAL_ROW_HEIGHT);
-    const start = Math.max(0, Math.floor(tableScrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN);
-    const end = Math.min(
-      draftRows.length,
-      start + visibleCount + VIRTUAL_OVERSCAN * 2,
-    );
-
-    return {
-      start,
-      end,
-      topSpacerHeight: start * VIRTUAL_ROW_HEIGHT,
-      bottomSpacerHeight: (draftRows.length - end) * VIRTUAL_ROW_HEIGHT,
-    };
-  }, [draftRows.length, tableScrollTop, tableViewportHeight]);
-
-  const visibleRows = useMemo(
-    () => draftRows.slice(virtualRange.start, virtualRange.end),
-    [draftRows, virtualRange.end, virtualRange.start],
-  );
 
   useEffect(() => {
     if (!toast) {
@@ -142,24 +184,32 @@ export function OrderWorkbench() {
   }, [toast]);
 
   useEffect(() => {
-    void refreshHistory(1, historyKeyword, historyDate);
+    void refreshRules();
+    void refreshHistory(1, "", "");
+    void refreshModelStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    const container = tableShellRef.current;
-    if (!container) {
-      return undefined;
-    }
-
-    const updateSize = () => {
-      setTableViewportHeight(container.clientHeight || 640);
+    return () => {
+      if (ruleSelectTimerRef.current) {
+        window.clearTimeout(ruleSelectTimerRef.current);
+      }
     };
-
-    updateSize();
-    window.addEventListener("resize", updateSize);
-    return () => window.removeEventListener("resize", updateSize);
   }, []);
+
+  function notifyRequestPending() {
+    setToast({ kind: "info", message: "正在请求中，请稍后再试" });
+  }
+
+  function resetPreviewState() {
+    setPreviewResult(null);
+    setPreviewFailure(null);
+    setDraftRows([]);
+    setExistingCodes([]);
+    setImportProgress({ completed: 0, total: 0 });
+    setSubmitProgress({ completed: 0, total: 0 });
+  }
 
   function scheduleDuplicateCheck(rows: OrderDraft[]) {
     if (duplicateCheckTimerRef.current) {
@@ -173,7 +223,60 @@ export function OrderWorkbench() {
         return;
       }
       void queryExistingCodes(codes);
-    }, 400);
+    }, 300);
+  }
+
+  async function queryExistingCodes(codes: string[]) {
+    try {
+      const response = await fetch("/api/orders/duplicates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codes }),
+      });
+      const data = (await response.json()) as { duplicates: string[] };
+      setExistingCodes(data.duplicates ?? []);
+    } catch {
+      setExistingCodes([]);
+    }
+  }
+
+  async function refreshRules() {
+    startRulesLoading(async () => {
+      try {
+        const response = await fetch("/api/import-rules");
+        const data = (await response.json()) as { items: ImportRule[]; message?: string };
+        const items = data.items ?? [];
+        setRules(items);
+
+        if (!selectedRuleId && items[0]) {
+          setSelectedRuleId(items[0].id);
+          setRuleForm(buildFormState(items[0]));
+        } else if (selectedRuleId) {
+          const matched = items.find((item) => item.id === selectedRuleId);
+          if (matched) {
+            setRuleForm((current) => (current.id === matched.id ? current : buildFormState(matched)));
+          }
+        }
+      } catch {
+        setToast({ kind: "error", message: "规则列表加载失败" });
+      }
+    });
+  }
+
+  async function refreshModelStatus() {
+    try {
+      const response = await fetch("/api/import-rules/suggest");
+      const data = (await response.json()) as ModelStatus;
+      setModelStatus(data);
+    } catch {
+      setModelStatus({
+        available: false,
+        provider: "heuristic",
+        model: null,
+        baseUrl: null,
+        mode: "heuristic",
+      });
+    }
   }
 
   async function refreshHistory(page = historyPage, keyword = historyKeyword, date = historyDate) {
@@ -196,65 +299,329 @@ export function OrderWorkbench() {
     });
   }
 
-  async function queryExistingCodes(codes: string[]) {
+  function selectRule(rule: ImportRule) {
+    if (isRulesLoading || isSavingRule || isDeletingRule || isApplyingSuggestion || isParsing) {
+      notifyRequestPending();
+      return;
+    }
+
+    if (isRuleSwitching) {
+      setToast({ kind: "info", message: "正在切换规则，请稍后再试" });
+      return;
+    }
+
+    if (rule.id === selectedRuleId) {
+      return;
+    }
+
+    setIsRuleSwitching(true);
+    if (ruleSelectTimerRef.current) {
+      window.clearTimeout(ruleSelectTimerRef.current);
+    }
+
+    ruleSelectTimerRef.current = window.setTimeout(() => {
+      setSelectedRuleId(rule.id);
+      setRuleForm(buildFormState(rule));
+      setSuggestion(null);
+      setSuggestionPreviewRows(0);
+      setIsRuleSwitching(false);
+      ruleSelectTimerRef.current = null;
+    }, 120);
+  }
+
+  function handleFileSelection(file: File) {
+    setSelectedFile(file);
+    resetPreviewState();
+    setSuggestion(null);
+    setSuggestionPreviewRows(0);
+    if (selectedRuleId === SUGGESTED_RULE_OPTION_ID) {
+      setSelectedRuleId("");
+      setRuleForm(buildFormState());
+    }
+    setToast({ kind: "info", message: `已选择文件：${file.name}` });
+  }
+
+  async function handleSuggestRule() {
+    if (isSuggesting) {
+      notifyRequestPending();
+      return;
+    }
+
+    if (!selectedFile) {
+      setToast({ kind: "info", message: "请先选择文件" });
+      return;
+    }
+
+    setSuggestion(null);
+    setSuggestionPreviewRows(0);
+
+    startSuggesting(async () => {
+      try {
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+
+        const response = await fetch("/api/import-rules/suggest", {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = (await response.json()) as RuleSuggestion & { message?: string };
+        if (!response.ok) {
+          throw new Error(data.message ?? "规则推荐失败");
+        }
+
+        setSuggestion(data);
+        setRuleForm({
+          name: data.rule.name,
+          description: data.rule.description,
+          fileType: data.rule.fileType,
+          source: data.rule.source,
+          configText: JSON.stringify(data.rule.config, null, 2),
+        });
+        setSelectedRuleId(SUGGESTED_RULE_OPTION_ID);
+        setToast({
+          kind: "success",
+          message: data.usedModel ? `已生成 AI 推荐规则（${data.usedModel}）` : "已生成推荐规则",
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "规则推荐失败";
+        setToast({ kind: "error", message });
+      }
+    });
+  }
+
+  function buildPreviewRulePayload() {
+    return {
+      name: ruleForm.name.trim(),
+      description: ruleForm.description.trim(),
+      fileType: ruleForm.fileType,
+      source: ruleForm.source,
+      config: JSON.parse(ruleForm.configText),
+    };
+  }
+
+  async function handleCopyRule(rule: ImportRule) {
+    if (isRuleSelectionLocked) {
+      notifyRequestPending();
+      return;
+    }
+
+    if (!confirmDiscardDirtyRuleForm()) {
+      return;
+    }
+
+    setSelectedRuleId("");
+    setSuggestion(null);
+    setSuggestionPreviewRows(0);
+    setRuleForm({
+      name: `${rule.name} - 副本`,
+      description: rule.description,
+      fileType: rule.fileType,
+      source: "manual",
+      configText: JSON.stringify(rule.config, null, 2),
+    });
+    setToast({ kind: "info", message: "已创建规则副本，请确认后保存" });
+  }
+
+  async function handleSaveRule() {
+    if (isSavingRule) {
+      notifyRequestPending();
+      return;
+    }
+
+    let config: unknown;
     try {
-      const response = await fetch("/api/orders/duplicates", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codes }),
-      });
-      const data = (await response.json()) as { duplicates: string[] };
-      setExistingCodes(data.duplicates ?? []);
+      config = JSON.parse(ruleForm.configText);
     } catch {
-      setExistingCodes([]);
+      setToast({ kind: "error", message: "规则 JSON 格式错误" });
+      return;
+    }
+
+    const payload = {
+      name: ruleForm.name.trim(),
+      description: ruleForm.description.trim(),
+      fileType: ruleForm.fileType,
+      source: ruleForm.source,
+      config,
+    };
+
+    if (!payload.name) {
+      setToast({ kind: "error", message: "规则名称不能为空" });
+      return;
+    }
+
+    startSavingRule(async () => {
+      try {
+        const isUpdate = Boolean(ruleForm.id);
+        const response = await fetch(isUpdate ? `/api/import-rules/${ruleForm.id}` : "/api/import-rules", {
+          method: isUpdate ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = (await response.json()) as { item?: ImportRule; message?: string };
+
+        if (!response.ok || !data.item) {
+          throw new Error(data.message ?? "规则保存失败");
+        }
+
+        await refreshRules();
+        setSelectedRuleId(data.item.id);
+        setRuleForm(buildFormState(data.item));
+        setToast({ kind: "success", message: isUpdate ? "规则已更新" : "规则已创建" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "规则保存失败";
+        setToast({ kind: "error", message });
+      }
+    });
+  }
+
+  async function handleDeleteRule() {
+    if (isDeletingRule) {
+      notifyRequestPending();
+      return;
+    }
+
+    if (!ruleForm.id) {
+      setRuleForm(buildFormState());
+      return;
+    }
+
+    const confirmed = window.confirm("确定删除当前规则吗？");
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingRule(true);
+    try {
+      const response = await fetch(`/api/import-rules/${ruleForm.id}`, { method: "DELETE" });
+      const data = (await response.json()) as { message?: string };
+      if (!response.ok) {
+        throw new Error(data.message ?? "规则删除失败");
+      }
+
+      setRuleForm(buildFormState());
+      setSelectedRuleId("");
+      await refreshRules();
+      setToast({ kind: "success", message: "规则已删除" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "规则删除失败";
+      setToast({ kind: "error", message });
+    } finally {
+      setIsDeletingRule(false);
     }
   }
 
-  async function handleFile(file: File) {
-    setSelectedFileName(file.name);
-    setImportProgress({ completed: 0, total: 0 });
+  async function handlePreviewWithRule(ruleId: string) {
+    if (isParsing) {
+      notifyRequestPending();
+      return null;
+    }
 
-    startParsing(async () => {
-      try {
-        const parsed = await parseExcelFile(file, (completed, total) => {
-          setImportProgress({ completed, total });
-        });
+    if (!selectedFile) {
+      setToast({ kind: "info", message: "请先选择文件" });
+      return null;
+    }
 
-        const savedMapping = loadSavedMapping(parsed.templateFingerprint);
-        const finalMapping = savedMapping ? { ...parsed.mapping, ...savedMapping } : parsed.mapping;
-        const finalRows = savedMapping
-          ? remapDraftRows(parsed.headers, parsed.sourceRows, finalMapping, parsed.headerRowIndex)
-          : parsed.rows;
+    let previewRulePayload: ReturnType<typeof buildPreviewRulePayload> | null = null;
+    try {
+      previewRulePayload = buildPreviewRulePayload();
+    } catch {
+      setToast({ kind: "error", message: "规则 JSON 格式错误" });
+      return null;
+    }
 
-        const finalResult: ParseResult = {
-          ...parsed,
-          mapping: finalMapping,
-          rows: finalRows,
-        };
+    if (ruleId === SUGGESTED_RULE_OPTION_ID) {
+      return await handlePreviewSuggestion();
+    }
 
-        setParseResult(finalResult);
-        setMapping(finalMapping);
-        startTableTransition(() => {
-          setDraftRows(finalRows);
-        });
-        setTableScrollTop(0);
-        if (tableShellRef.current) {
-          tableShellRef.current.scrollTop = 0;
+    return new Promise<ParseResult | null>((resolve) => {
+      startParsing(async () => {
+        try {
+          setImportProgress({ completed: 20, total: 100 });
+          setPreviewFailure(null);
+          const formData = new FormData();
+          formData.append("file", selectedFile);
+          if (ruleId) {
+            formData.append("ruleId", ruleId);
+          } else if (previewRulePayload) {
+            formData.append("rule", JSON.stringify(previewRulePayload));
+          }
+
+          const response = await fetch("/api/import-preview", {
+            method: "POST",
+            body: formData,
+          });
+
+          const data = (await response.json()) as ParseResult & { message?: string };
+          if (!response.ok) {
+            throw new Error(data.message ?? "试解析失败");
+          }
+
+          setImportProgress({ completed: 100, total: 100 });
+          setPreviewResult(data);
+          setPreviewFailure(null);
+          setDraftRows(data.rows ?? []);
+          scheduleDuplicateCheck(data.rows ?? []);
+          setToast({
+            kind: "success",
+            message: `试解析完成，得到 ${(data.rows ?? []).length} 行明细`,
+          });
+          resolve(data);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "试解析失败";
+          setImportProgress({ completed: 0, total: 0 });
+          resetPreviewState();
+          setPreviewFailure({
+            fileName: selectedFile.name,
+            fileType: getSuggestedRuleFileType(selectedFile.name),
+            message,
+            ruleName: previewRulePayload?.name || ruleForm.name.trim() || "临时规则",
+            ruleSource: previewRulePayload?.source ?? ruleForm.source,
+            previewText: previewRulePayload ? JSON.stringify(previewRulePayload.config, null, 2).slice(0, 800) : "",
+          });
+          setToast({ kind: "error", message });
+          resolve(null);
         }
-        scheduleDuplicateCheck(finalRows);
-
-        setToast({
-          kind: "success",
-          message: `已导入 ${finalRows.length} 行，Sheet：${finalResult.detectedSheetName}`,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "文件解析失败";
-        setToast({ kind: "error", message });
-        setParseResult(null);
-        setDraftRows([]);
-        setExistingCodes([]);
-      }
+      });
     });
+  }
+
+  async function handlePreviewSuggestion(): Promise<ParseResult | null> {
+    if (isApplyingSuggestion) {
+      notifyRequestPending();
+      return null;
+    }
+
+    if (!suggestion || !selectedFile) {
+      return null;
+    }
+
+    setIsApplyingSuggestion(true);
+    try {
+      const response = await fetch("/api/import-rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(suggestion.rule),
+      });
+      const data = (await response.json()) as { item?: ImportRule; message?: string };
+
+      if (!response.ok || !data.item) {
+        throw new Error(data.message ?? "推荐规则创建失败");
+      }
+
+      await refreshRules();
+      setSelectedRuleId(data.item.id);
+      setRuleForm(buildFormState(data.item));
+      const preview = await handlePreviewWithRule(data.item.id);
+      setSuggestionPreviewRows(preview?.rows.length ?? 0);
+      return preview;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "推荐规则试解析失败";
+      setToast({ kind: "error", message });
+      return null;
+    } finally {
+      setIsApplyingSuggestion(false);
+    }
   }
 
   function updateDraft(rowId: string, field: keyof OrderDraft, value: string) {
@@ -269,7 +636,7 @@ export function OrderWorkbench() {
 
   function addBlankRow() {
     setDraftRows((current) => {
-      const next = [...current, makeBlankRow(current.length + 1)];
+      const next = [...current, makeBlankDraft(current.length + 1)];
       scheduleDuplicateCheck(next);
       return next;
     });
@@ -283,30 +650,12 @@ export function OrderWorkbench() {
     });
   }
 
-  function handleMappingChange(field: keyof ColumnMapping, header: string) {
-    if (!parseResult) {
+  async function handleSubmit() {
+    if (isSubmitting) {
+      notifyRequestPending();
       return;
     }
 
-    const nextMapping = { ...mapping, [field]: header || undefined };
-    const parsedRows = remapDraftRows(
-      parseResult.headers,
-      parseResult.sourceRows,
-      nextMapping,
-      parseResult.headerRowIndex,
-    );
-
-    setMapping(nextMapping);
-    saveMapping(parseResult.templateFingerprint, nextMapping);
-
-    startTableTransition(() => {
-      setDraftRows(parsedRows);
-    });
-    scheduleDuplicateCheck(parsedRows);
-    setToast({ kind: "info", message: "映射已更新，并写入模板记忆" });
-  }
-
-  async function handleSubmit() {
     if (draftRows.length === 0) {
       setToast({ kind: "info", message: "当前没有可提交的数据" });
       return;
@@ -327,7 +676,7 @@ export function OrderWorkbench() {
 
         setSubmitProgress({ completed: 0, total: orders.length });
 
-        for (const [index, batch] of batches.entries()) {
+        for (const batch of batches) {
           const response = await fetch("/api/orders", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -341,7 +690,7 @@ export function OrderWorkbench() {
           };
 
           if (!response.ok) {
-            throw new Error(data.message ?? `第 ${index + 1} 批提交失败`);
+            throw new Error(data.message ?? "提交失败");
           }
 
           completed += batch.length;
@@ -352,24 +701,15 @@ export function OrderWorkbench() {
 
         setToast({
           kind: failedTotal ? "info" : "success",
-          message: `提交完成：成功 ${successTotal} 条，失败 ${failedTotal} 条，分 ${batches.length} 批提交`,
+          message: `提交完成：成功 ${successTotal} 条，失败 ${failedTotal} 条`,
         });
 
         if (failedTotal === 0) {
-          setSelectedFileName("");
-          setParseResult(null);
-          setMapping({});
-          setDraftRows([]);
-          setExistingCodes([]);
-          setImportProgress({ completed: 0, total: 0 });
-          setSubmitProgress({ completed: 0, total: 0 });
-          setTableScrollTop(0);
-          if (tableShellRef.current) {
-            tableShellRef.current.scrollTop = 0;
-          }
           if (fileInputRef.current) {
             fileInputRef.current.value = "";
           }
+          setSelectedFile(null);
+          resetPreviewState();
         }
 
         await refreshHistory(1, historyKeyword, historyDate);
@@ -381,6 +721,11 @@ export function OrderWorkbench() {
   }
 
   async function handleDeleteAllImportedOrders() {
+    if (isDeletingAllOrders) {
+      notifyRequestPending();
+      return;
+    }
+
     const confirmed = window.confirm("确定要删除所有已导入运单数据吗？此操作不可恢复。");
     if (!confirmed) {
       return;
@@ -388,22 +733,15 @@ export function OrderWorkbench() {
 
     setIsDeletingAllOrders(true);
     try {
-      const response = await fetch("/api/orders", {
-        method: "DELETE",
-      });
-
-      const data = (await response.json()) as {
-        message?: string;
-        deleted?: number;
-      };
+      const response = await fetch("/api/orders", { method: "DELETE" });
+      const data = (await response.json()) as { deleted?: number; message?: string };
 
       if (!response.ok) {
         throw new Error(data.message ?? "清空失败");
       }
 
-      setHistoryPage(1);
       await refreshHistory(1, historyKeyword, historyDate);
-      setToast({ kind: "success", message: `已删除 ${data.deleted ?? 0} 条已导入运单` });
+      setToast({ kind: "success", message: `已删除 ${data.deleted ?? 0} 条记录` });
     } catch (error) {
       const message = error instanceof Error ? error.message : "清空失败";
       setToast({ kind: "error", message });
@@ -413,58 +751,340 @@ export function OrderWorkbench() {
   }
 
   const historyTotalPages = historyTotal > 0 ? Math.ceil(historyTotal / PAGE_SIZE) : 0;
-  const historyDisplayPage = historyTotalPages === 0 ? 0 : historyPage;
+  const validationSummary = `${validationState.allErrors.length} 条错误 / ${invalidRowCount} 行`;
+  const selectedRule = rules.find((item) => item.id === selectedRuleId) ?? null;
+  const isRuleSelectionLocked =
+    isRulesLoading || isSavingRule || isDeletingRule || isApplyingSuggestion || isParsing || isRuleSwitching;
+  const baselineRuleForm = buildFormState(selectedRule ?? undefined);
+  const isRuleFormDirty = !isSameRuleForm(ruleForm, baselineRuleForm);
+  const topNavItems = ["网络货运", "冷链智运", "智冷仓链", "更多租户"];
+  const sectionItems: Array<{
+    key: WorkspaceSection;
+    label: string;
+    eyebrow: string;
+    title: string;
+    description: string;
+    chips: string[];
+  }> = [
+    {
+      key: "rules",
+      label: "规则管理",
+      eyebrow: "Rule Center",
+      title: "导入规则管理",
+      description: "维护不同文件模板的解析规则，支持手工编辑、刷新和 AI 推荐规则落库。",
+      chips: ["规则配置", "AI建议", "模板适配"],
+    },
+    {
+      key: "batch",
+      label: "批量录单",
+      eyebrow: "Batch Entry",
+      title: "批量录单工作台",
+      description: "完成文件上传、试解析、在线修正、校验与批量提交，是当前项目的核心录单入口。",
+      chips: ["文件导入", "在线校验", "批量提交"],
+    },
+    {
+      key: "history",
+      label: "已导入运单",
+      eyebrow: "Imported Orders",
+      title: "已导入运单查询",
+      description: "按关键字和日期检索已入库记录，查看导入后的运单结果并支持批量清理。",
+      chips: ["历史检索", "分页浏览", "数据清理"],
+    },
+  ];
+  const currentSection = sectionItems.find((item) => item.key === activeSection) ?? sectionItems[1];
+  const statusCards = [
+    { label: "当前文件", value: selectedFile?.name ?? "未选择" },
+    { label: "当前规则", value: selectedRule?.name ?? suggestion?.rule.name ?? "未选择" },
+    { label: "校验状态", value: draftRows.length ? validationSummary : "等待试解析" },
+    { label: "规则建议引擎", value: modelStatus?.mode === "llm" ? modelStatus.provider : "启发式回退" },
+  ];
+
+  function confirmDiscardDirtyRuleForm() {
+    if (!isRuleFormDirty) {
+      return true;
+    }
+
+    return window.confirm("当前规则编辑内容尚未保存，继续操作将丢失修改。是否继续？");
+  }
 
   return (
-    <div className="page-shell">
-      <section className="hero">
-        <div>
-          <p className="eyebrow">AI 万能导入</p>
-          <h1>多模板 Excel 自动导入下单系统</h1>
-          <p className="hero-copy">
-            支持多 Sheet、说明行、英文表头、分组表头、列顺序漂移和手动映射记忆。
-          </p>
-        </div>
-        <div className="hero-stats">
-          <div className="stat-card">
-            <span>当前文件</span>
-            <strong>{selectedFileName || "未选择"}</strong>
-          </div>
-          <div className="stat-card">
-            <span>预览行数</span>
-            <strong>{draftRows.length}</strong>
-          </div>
-          <div className="stat-card">
-            <span>错误行数</span>
-            <strong>{invalidRowCount}</strong>
+    <div className="app-frame">
+      <header className="app-topbar">
+        <div className="brand-block">
+          <div className="brand-logo">ZT</div>
+          <div className="brand-meta">
+            <strong>中通冷链</strong>
+            <span>ZTO COLD CHAIN</span>
           </div>
         </div>
-      </section>
+        <nav className="top-nav">
+          {topNavItems.map((item) => (
+            <span key={item} className="top-nav-item">
+              {item}
+            </span>
+          ))}
+        </nav>
+        <div className="topbar-actions">
+          <span>返回旧版</span>
+          <span>快捷脱离</span>
+          <span>消息</span>
+          <span>导出</span>
+          <span>下载</span>
+        </div>
+      </header>
 
-      <section className="panel upload-panel">
+      <div className="app-body">
+        <aside className="app-sidebar">
+          <div className="sidebar-head">
+            <span>功能导航</span>
+            <button type="button">⌄</button>
+          </div>
+          <div className="sidebar-search">按功能切换工作区</div>
+          <div className="sidebar-menu">
+            {sectionItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className={activeSection === item.key ? "sidebar-item active" : "sidebar-item"}
+                onClick={() => setActiveSection(item.key)}
+              >
+                {item.label}
+                <small>{item.eyebrow}</small>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <main className="app-main">
+          <div className="workspace-tabs">
+            {sectionItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className={activeSection === item.key ? "workspace-tab current" : "workspace-tab"}
+                onClick={() => setActiveSection(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="page-shell">
+            <section className="workspace-toolbar">
+              <div className="toolbar-title">
+                <p className="eyebrow">{currentSection.eyebrow}</p>
+                <h1>{currentSection.title}</h1>
+                <p className="hero-copy">{currentSection.description}</p>
+              </div>
+              <div className="toolbar-actions">
+                {currentSection.chips.map((chip) => (
+                  <span key={chip} className="toolbar-chip">
+                    {chip}
+                  </span>
+                ))}
+              </div>
+            </section>
+
+            <div className="workspace-content">
+              <div className="workspace-main">
+                {activeSection === "rules" ? (
+                  <section className="panel panel-grid">
         <div className="panel-header">
           <div>
-            <h2>1. 导入模板</h2>
-            <p>上传 Excel 文件，自动识别模板并加载历史映射。</p>
+            <h2>规则管理</h2>
+            <p>规则持久化保存在服务端。可手工配置，也可让 AI 先生成初始规则再人工微调。</p>
           </div>
           <div className="button-row">
-            <button className="ghost-button" onClick={() => fileInputRef.current?.click()} type="button">
-              选择文件
-            </button>
-            <input
-              ref={fileInputRef}
-              className="hidden-input"
-              type="file"
-              accept=".xlsx,.xls"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  void handleFile(file);
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => {
+                if (!confirmDiscardDirtyRuleForm()) {
+                  return;
                 }
+                setSelectedRuleId("");
+                setRuleForm(buildFormState());
+                setSuggestion(null);
               }}
-            />
+            >
+              新建规则
+            </button>
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={isRulesLoading}
+              onClick={() => {
+                if (isRulesLoading) {
+                  notifyRequestPending();
+                  return;
+                }
+                void refreshRules();
+              }}
+            >
+              {isRulesLoading ? "刷新中..." : "刷新列表"}
+            </button>
+            <span className="muted-text">
+              {isRuleSwitching ? "规则切换中..." : isRuleFormDirty ? "有未保存修改" : ""}
+            </span>
           </div>
         </div>
+
+        <div className="rule-layout">
+          <div className="rule-list">
+            {rules.map((rule) => (
+              <button
+                key={rule.id}
+                type="button"
+                disabled={isRuleSelectionLocked}
+                className={selectedRuleId === rule.id ? "rule-card active" : "rule-card"}
+                onClick={() => {
+                  if (!confirmDiscardDirtyRuleForm()) {
+                    return;
+                  }
+                  selectRule(rule);
+                }}
+              >
+                <strong>{rule.name}</strong>
+                <span>{rule.description || "未填写描述"}</span>
+                <small>
+                  {rule.fileType} · {rule.source}
+                </small>
+                <span className="rule-card-action">复制规则</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="rule-editor">
+            <div className="form-grid">
+              <label className="field">
+                <span>规则名称</span>
+                <input
+                  value={ruleForm.name}
+                  onChange={(event) => setRuleForm((current) => ({ ...current, name: event.target.value }))}
+                />
+              </label>
+
+              <label className="field">
+                <span>适用文件类型</span>
+                <select
+                  value={ruleForm.fileType}
+                  onChange={(event) =>
+                    setRuleForm((current) => ({
+                      ...current,
+                      fileType: event.target.value as ImportRule["fileType"],
+                    }))
+                  }
+                >
+                  <option value="any">任意</option>
+                  <option value="excel">Excel</option>
+                  <option value="word">Word</option>
+                  <option value="pdf">PDF</option>
+                </select>
+              </label>
+
+              <label className="field field-full">
+                <span>规则描述</span>
+                <input
+                  value={ruleForm.description}
+                  onChange={(event) =>
+                    setRuleForm((current) => ({ ...current, description: event.target.value }))
+                  }
+                />
+              </label>
+
+              <label className="field field-full">
+                <span>规则 JSON</span>
+                <textarea
+                  rows={18}
+                  value={ruleForm.configText}
+                  onChange={(event) =>
+                    setRuleForm((current) => ({ ...current, configText: event.target.value }))
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="button-row">
+              <button className="primary-button" type="button" onClick={() => void handleSaveRule()}>
+                {isSavingRule ? "保存中..." : ruleForm.id ? "更新规则" : "创建规则"}
+              </button>
+              <button
+                className="ghost-button"
+                type="button"
+                disabled={!ruleForm.id || isRuleSelectionLocked}
+                onClick={() => {
+                  const currentRule = rules.find((item) => item.id === ruleForm.id);
+                  if (currentRule) {
+                    void handleCopyRule(currentRule);
+                  }
+                }}
+              >
+                复制当前规则
+              </button>
+              <button className="ghost-button" type="button" disabled={isDeletingRule} onClick={() => void handleDeleteRule()}>
+                {isDeletingRule ? "删除中..." : "删除当前规则"}
+              </button>
+            </div>
+          </div>
+        </div>
+                  </section>
+                ) : null}
+
+                {activeSection === "batch" ? (
+                  <>
+                    <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>上传文件与 AI 规则建议</h2>
+            <p>先上传文件，再选择已有规则试解析，或让 AI/启发式先生成一版推荐规则。</p>
+          </div>
+          <div className="button-row">
+            <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
+              选择文件
+            </button>
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={isSuggesting}
+              onClick={() => {
+                if (!confirmDiscardDirtyRuleForm()) {
+                  return;
+                }
+                void handleSuggestRule();
+              }}
+            >
+              {isSuggesting ? "分析中..." : "AI 建议规则"}
+            </button>
+          </div>
+        </div>
+
+        <div className="status-strip">
+          <span className={modelStatus?.mode === "llm" ? "status-badge status-live" : "status-badge"}>
+            {modelStatus?.mode === "llm" ? "LLM 已接入" : "当前使用启发式"}
+          </span>
+          <span className="muted-text">
+            Provider：{modelStatus?.provider ?? "未知"}
+          </span>
+          <span className="muted-text">
+            Model：{modelStatus?.model ?? "未配置"}
+          </span>
+          <span className="muted-text text-ellipsis">
+            Base URL：{modelStatus?.baseUrl ?? "未配置"}
+          </span>
+        </div>
+
+        <input
+          ref={fileInputRef}
+          className="hidden-input"
+          type="file"
+          accept=".xlsx,.xls,.docx,.pdf"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              handleFileSelection(file);
+            }
+          }}
+        />
 
         <label
           className="dropzone"
@@ -473,34 +1093,59 @@ export function OrderWorkbench() {
             event.preventDefault();
             const file = event.dataTransfer.files?.[0];
             if (file) {
-              void handleFile(file);
+              handleFileSelection(file);
             }
           }}
         >
-          <input
-            className="hidden-input"
-            type="file"
-            accept=".xlsx,.xls"
+          <strong>拖拽文件到此处</strong>
+          <span>支持 .xlsx / .xls / .docx / .pdf</span>
+        </label>
+
+        <div className="inline-actions">
+          <select
+            value={selectedRuleId}
             onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void handleFile(file);
+              if (!confirmDiscardDirtyRuleForm()) {
+                return;
+              }
+              const nextRuleId = event.target.value;
+              setSelectedRuleId(nextRuleId);
+              if (nextRuleId === SUGGESTED_RULE_OPTION_ID && suggestion) {
+                setRuleForm({
+                  name: suggestion.rule.name,
+                  description: suggestion.rule.description,
+                  fileType: suggestion.rule.fileType,
+                  source: suggestion.rule.source,
+                  configText: JSON.stringify(suggestion.rule.config, null, 2),
+                });
+                return;
+              }
+              const matched = rules.find((item) => item.id === nextRuleId);
+              if (matched) {
+                setRuleForm(buildFormState(matched));
               }
             }}
-          />
-          <strong>拖拽 Excel 到此处</strong>
-          <span>或点击上方按钮上传，支持 `.xlsx / .xls`</span>
-        </label>
+          >
+            <option value="">选择已有规则</option>
+            {suggestion ? <option value={SUGGESTED_RULE_OPTION_ID}>AI 推荐规则</option> : null}
+            {rules.map((rule) => (
+              <option key={rule.id} value={rule.id}>
+                {rule.name} ({rule.fileType})
+              </option>
+            ))}
+          </select>
+          <button className="primary-button" type="button" disabled={isParsing} onClick={() => void handlePreviewWithRule(selectedRuleId)}>
+            {isParsing ? "试解析中..." : "按当前规则试解析"}
+          </button>
+        </div>
 
         <div className="progress-strip">
           <div className="progress-meta">
-            <span>导入进度</span>
+            <span>试解析进度</span>
             <span>
               {importProgress.total > 0
-                ? `${Math.round((importProgress.completed / importProgress.total) * 100)}% · ${importProgress.completed}/${importProgress.total}`
-                : isParsing
-                  ? "准备中"
-                  : "未开始"}
+                ? `${Math.round((importProgress.completed / importProgress.total) * 100)}%`
+                : "未开始"}
             </span>
           </div>
           <div className="progress-bar">
@@ -516,48 +1161,42 @@ export function OrderWorkbench() {
           </div>
         </div>
 
-        {parseResult ? (
-          <div className="mapping-grid">
-            <div className="mapping-head">
-              <h3>模板映射</h3>
-              <span>
-                Sheet：{parseResult.detectedSheetName} · 表头第 {parseResult.headerRowIndex + 1} 行
-              </span>
+        {suggestion ? (
+          <div className="suggestion-box">
+            <div className="panel-header panel-header-compact">
+              <div>
+                <h3>{suggestion.rule.name}</h3>
+                <p>{suggestion.rule.description}</p>
+              </div>
+              <button className="primary-button" type="button" disabled={isApplyingSuggestion} onClick={() => void handlePreviewSuggestion()}>
+                {isApplyingSuggestion ? "保存并试解析中..." : "保存并试解析"}
+              </button>
             </div>
-            {ORDER_FIELDS.map((field) => (
-              <label key={field.key} className="mapping-item">
-                <span>
-                  {field.label}
-                  {field.required ? " *" : ""}
-                </span>
-                <select
-                  value={mapping[field.key] ?? ""}
-                  onChange={(event) => handleMappingChange(field.key, event.target.value)}
-                >
-                  <option value="">未映射</option>
-                  {parseResult.headers.map((header) => (
-                    <option key={header} value={header}>
-                      {header}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ))}
+            <div className="tag-row">
+              <span className="tag-chip">文件类型：{suggestion.rule.fileType}</span>
+              <span className="tag-chip">来源：{suggestion.rule.source}</span>
+              <span className="tag-chip">Provider：{suggestion.provider}</span>
+              <span className="tag-chip">
+                引擎：{suggestion.usedModel ?? `${getSuggestedRuleFileType(selectedFile?.name ?? "")} 启发式`}
+              </span>
+              <span className="tag-chip">最近试解析：{suggestionPreviewRows} 行</span>
+            </div>
+            <ul className="reason-list">
+              {suggestion.reasoning.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
           </div>
         ) : null}
-      </section>
+                    </section>
 
-      <section className="panel">
+                    <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>2. 预览与编辑</h2>
-            <p>使用虚拟滚动，仅渲染可视区行，避免 1000+ 行导致页面冻结。</p>
+            <h2>试解析结果与在线编辑</h2>
+            <p>所有错误一次性展示。可新增空行、删除行、在线修正后导出或提交。</p>
           </div>
           <div className="button-row">
-            <span className="muted-text">
-              当前渲染 {visibleRows.length} / 总计 {draftRows.length} 行
-              {isTablePending ? " · 更新中" : ""}
-            </span>
             <button className="ghost-button" type="button" onClick={addBlankRow}>
               新增空行
             </button>
@@ -572,11 +1211,56 @@ export function OrderWorkbench() {
           </div>
         </div>
 
-        <div
-          ref={tableShellRef}
-          className="table-shell virtual-shell"
-          onScroll={(event) => setTableScrollTop(event.currentTarget.scrollTop)}
-        >
+        {previewResult ? (
+          <div className="summary-grid">
+            <div className="summary-card">
+              <span>文件类型</span>
+              <strong>{previewResult.summary.fileType}</strong>
+            </div>
+            <div className="summary-card">
+              <span>识别模式</span>
+              <strong>{previewResult.summary.detectedMode}</strong>
+            </div>
+            <div className="summary-card">
+              <span>试解析行数</span>
+              <strong>{previewResult.rows.length}</strong>
+            </div>
+          </div>
+        ) : null}
+
+        {previewResult?.warnings.length ? (
+          <div className="warning-box">
+            <strong>试解析提示</strong>
+            <ul className="reason-list">
+              {previewResult.warnings.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {previewFailure ? (
+          <div className="warning-box preview-failure-box">
+            <strong>试解析失败</strong>
+            <div className="failure-meta">
+              <span>文件：{previewFailure.fileName}</span>
+              <span>类型：{previewFailure.fileType}</span>
+              <span>规则：{previewFailure.ruleName}</span>
+              <span>来源：{previewFailure.ruleSource}</span>
+            </div>
+            <p className="failure-message">{previewFailure.message}</p>
+            {previewFailure.previewText ? (
+              <textarea className="failure-preview" readOnly rows={10} value={previewFailure.previewText} />
+            ) : null}
+            <div className="button-row">
+              <button className="ghost-button" type="button" onClick={() => setActiveSection("rules")}>
+                去规则管理
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="table-shell">
           <table className="order-table">
             <thead>
               <tr>
@@ -591,81 +1275,40 @@ export function OrderWorkbench() {
               {draftRows.length === 0 ? (
                 <tr>
                   <td colSpan={ORDER_FIELDS.length + 2} className="empty-cell">
-                    暂无数据，先上传 Excel 文件。
+                    暂无试解析结果。
                   </td>
                 </tr>
               ) : (
-                <>
-                  {virtualRange.topSpacerHeight > 0 ? (
-                    <tr className="virtual-spacer">
-                      <td
-                        colSpan={ORDER_FIELDS.length + 2}
-                        style={{ height: virtualRange.topSpacerHeight }}
-                      />
+                draftRows.map((row, index) => {
+                  const rowErrors = validationMap.get(row.id) ?? new Map<string, string>();
+                  return (
+                    <tr key={row.id} className={rowErrors.size > 0 ? "row-error" : ""}>
+                      <td>{row.originalRowNumber || index + 1}</td>
+                      {ORDER_FIELDS.map((field) => {
+                        const error = rowErrors.get(field.key);
+                        return (
+                          <td key={field.key}>
+                            <input
+                              className={error ? "cell-input input-error" : "cell-input"}
+                              value={row[field.key]}
+                              placeholder={field.placeholder}
+                              title={error}
+                              onChange={(event) =>
+                                updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
+                              }
+                            />
+                            {error ? <span className="inline-error">{error}</span> : null}
+                          </td>
+                        );
+                      })}
+                      <td>
+                        <button className="danger-link" type="button" onClick={() => removeRow(row.id)}>
+                          删除
+                        </button>
+                      </td>
                     </tr>
-                  ) : null}
-
-                  {visibleRows.map((row, index) => {
-                    const actualIndex = virtualRange.start + index;
-                    const rowErrors = validationMap.get(row.id) ?? new Map<string, string>();
-
-                    return (
-                      <tr key={row.id} className={rowErrors.size > 0 ? "row-error" : ""}>
-                        <td>{row.originalRowNumber || actualIndex + 1}</td>
-                        {ORDER_FIELDS.map((field) => {
-                          const error = rowErrors.get(field.key);
-                          const value = row[field.key];
-                          const isTempZone = field.key === "tempZone";
-
-                          return (
-                            <td key={field.key}>
-                              {isTempZone ? (
-                                <select
-                                  className={error ? "cell-input input-error" : "cell-input"}
-                                  value={value}
-                                  onChange={(event) =>
-                                    updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
-                                  }
-                                  title={error}
-                                >
-                                  <option value="">请选择</option>
-                                  <option value="常温">常温</option>
-                                  <option value="冷藏">冷藏</option>
-                                  <option value="冷冻">冷冻</option>
-                                </select>
-                              ) : (
-                                <input
-                                  className={error ? "cell-input input-error" : "cell-input"}
-                                  value={value}
-                                  title={error}
-                                  placeholder={field.placeholder}
-                                  onChange={(event) =>
-                                    updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
-                                  }
-                                />
-                              )}
-                              {error ? <span className="inline-error">{error}</span> : null}
-                            </td>
-                          );
-                        })}
-                        <td>
-                          <button className="danger-link" type="button" onClick={() => removeRow(row.id)}>
-                            删除
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-
-                  {virtualRange.bottomSpacerHeight > 0 ? (
-                    <tr className="virtual-spacer">
-                      <td
-                        colSpan={ORDER_FIELDS.length + 2}
-                        style={{ height: virtualRange.bottomSpacerHeight }}
-                      />
-                    </tr>
-                  ) : null}
-                </>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -674,15 +1317,12 @@ export function OrderWorkbench() {
         <div className="error-board">
           <div className="error-board-head">
             <h3>全量错误列表</h3>
-            <span className="muted-text">校验计算已延后到低优先级，输入时不再明显卡顿</span>
+            <span className="muted-text">{validationSummary}</span>
           </div>
           {validationState.allErrors.length === 0 ? (
             <p className="muted-text">当前没有错误。</p>
           ) : (
             <div className="error-board-body">
-              <div className="error-board-summary">
-                共 {errorCount} 条错误，涉及 {invalidRowCount} 行
-              </div>
               <ul>
                 {validationState.allErrors.map((message) => (
                   <li key={message}>{message}</li>
@@ -691,21 +1331,16 @@ export function OrderWorkbench() {
             </div>
           )}
         </div>
-      </section>
+                    </section>
 
-      <section className="panel">
+                    <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>3. 提交下单</h2>
-            <p>有错误时禁止提交，提交完成后返回成功/失败汇总。</p>
+            <h2>提交下单</h2>
+            <p>有错误时禁止提交。提交成功后写入数据库，并可在历史列表中继续检索。</p>
           </div>
-          <button
-            className="primary-button"
-            type="button"
-            onClick={handleSubmit}
-            disabled={isSubmitting || draftRows.length === 0}
-          >
-            提交下单
+          <button className="primary-button" type="button" disabled={isSubmitting} onClick={() => void handleSubmit()}>
+            {isSubmitting ? "提交中..." : "提交下单"}
           </button>
         </div>
 
@@ -730,40 +1365,40 @@ export function OrderWorkbench() {
             />
           </div>
         </div>
-      </section>
+                    </section>
+                  </>
+                ) : null}
 
-      <section className="panel">
+                {activeSection === "history" ? (
+                  <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>4. 已导入运单</h2>
-            <p>从数据库读取历史记录，支持关键词筛选与分页。</p>
+            <h2>已导入运单</h2>
+            <p>从数据库读取历史记录，支持按外部编码、门店、收件人、商品名和日期筛选。</p>
           </div>
           <div className="history-filters">
             <input
               value={historyKeyword}
-              placeholder="搜外部编码 / 收件人 / 发件人"
+              placeholder="搜外部编码 / 门店 / 收件人 / SKU"
               onChange={(event) => setHistoryKeyword(event.target.value)}
             />
-            <input
-              value={historyDate}
-              type="date"
-              onChange={(event) => setHistoryDate(event.target.value)}
-            />
+            <input value={historyDate} type="date" onChange={(event) => setHistoryDate(event.target.value)} />
             <button
               className="ghost-button"
               type="button"
-              onClick={() => void refreshHistory(1, historyKeyword, historyDate)}
-              disabled={isDeletingAllOrders}
+              disabled={isHistoryLoading}
+              onClick={() => {
+                if (isHistoryLoading) {
+                  notifyRequestPending();
+                  return;
+                }
+                void refreshHistory(1, historyKeyword, historyDate);
+              }}
             >
-              搜索
+              {isHistoryLoading ? "搜索中..." : "搜索"}
             </button>
-            <button
-              className="danger-link"
-              type="button"
-              onClick={() => void handleDeleteAllImportedOrders()}
-              disabled={isDeletingAllOrders || historyTotal === 0}
-            >
-              {isDeletingAllOrders ? "清空中..." : "删除全部已导入运单"}
+            <button className="danger-link" type="button" disabled={isDeletingAllOrders} onClick={() => void handleDeleteAllImportedOrders()}>
+              {isDeletingAllOrders ? "删除中..." : "删除全部已导入运单"}
             </button>
           </div>
         </div>
@@ -773,10 +1408,10 @@ export function OrderWorkbench() {
             <thead>
               <tr>
                 <th>外部编码</th>
-                <th>收件人</th>
-                <th>温层</th>
-                <th>重量</th>
-                <th>件数</th>
+                <th>门店/收件人</th>
+                <th>SKU编码</th>
+                <th>SKU名称</th>
+                <th>数量</th>
                 <th>提交时间</th>
               </tr>
             </thead>
@@ -791,10 +1426,10 @@ export function OrderWorkbench() {
                 history.map((item) => (
                   <tr key={item.recordId}>
                     <td>{item.externalCode || "-"}</td>
-                    <td>{item.receiverName}</td>
-                    <td>{item.tempZone}</td>
-                    <td>{item.weight}</td>
-                    <td>{item.quantity}</td>
+                    <td>{item.receiverStore || item.receiverName || "-"}</td>
+                    <td>{item.skuCode}</td>
+                    <td>{item.skuName}</td>
+                    <td>{item.skuQuantity}</td>
                     <td>{new Date(item.submittedAt).toLocaleString("zh-CN")}</td>
                   </tr>
                 ))
@@ -806,30 +1441,60 @@ export function OrderWorkbench() {
         <div className="pagination">
           <div className="pagination-meta">
             <span>共 {historyTotal} 条数据</span>
-            <span>第 {historyDisplayPage} / {historyTotalPages} 页</span>
+            <span>第 {historyPage} / {historyTotalPages || 1} 页</span>
             <span>每页 {PAGE_SIZE} 条</span>
           </div>
           <button
             className="ghost-button"
             type="button"
-            disabled={historyTotalPages === 0 || historyPage <= 1}
-            onClick={() => void refreshHistory(historyPage - 1)}
+            disabled={historyPage <= 1}
+            onClick={() => {
+              if (isHistoryLoading) {
+                notifyRequestPending();
+                return;
+              }
+              void refreshHistory(historyPage - 1);
+            }}
           >
-            上一页
+            {isHistoryLoading ? "加载中..." : "上一页"}
           </button>
-          <span>
-            第 {historyPage} / {historyTotalPages} 页
-          </span>
           <button
             className="ghost-button"
             type="button"
             disabled={historyTotalPages === 0 || historyPage >= historyTotalPages}
-            onClick={() => void refreshHistory(historyPage + 1)}
+            onClick={() => {
+              if (isHistoryLoading) {
+                notifyRequestPending();
+                return;
+              }
+              void refreshHistory(historyPage + 1);
+            }}
           >
-            下一页
+            {isHistoryLoading ? "加载中..." : "下一页"}
           </button>
         </div>
-      </section>
+                  </section>
+                ) : null}
+              </div>
+
+              <aside className="status-dock status-dock-inline" aria-label="导入动态面板">
+                <div className="status-dock-head">
+                  <span>导入动态</span>
+                  <strong>实时状态</strong>
+                </div>
+                <div className="status-dock-grid">
+                  {statusCards.map((card) => (
+                    <div key={card.label} className="stat-card status-card-compact">
+                      <span>{card.label}</span>
+                      <strong title={card.value}>{card.value}</strong>
+                    </div>
+                  ))}
+                </div>
+              </aside>
+            </div>
+          </div>
+        </main>
+      </div>
 
       {toast ? <div className={`toast toast-${toast.kind}`}>{toast.message}</div> : null}
     </div>

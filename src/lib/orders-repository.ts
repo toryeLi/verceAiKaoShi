@@ -17,8 +17,8 @@ export async function getExistingCodes(codes: string[]) {
   await ensureOrdersTable();
 
   const result = await sql<{ external_code: string }[]>`
-    select external_code
-    from orders
+    select distinct external_code
+    from import_orders
     where external_code = any(${codes})
   `;
 
@@ -40,31 +40,29 @@ export async function insertOrders(orders: ImportedOrder[]) {
   for (const order of orders) {
     try {
       await sql`
-        insert into orders (
+        insert into import_orders (
           record_id,
           external_code,
-          sender_name,
-          sender_phone,
-          sender_address,
+          receiver_store,
           receiver_name,
           receiver_phone,
           receiver_address,
-          weight,
-          quantity,
-          temp_zone,
+          sku_code,
+          sku_name,
+          sku_quantity,
+          sku_spec,
           note
         ) values (
           ${crypto.randomUUID()},
           ${order.externalCode},
-          ${order.senderName},
-          ${order.senderPhone},
-          ${order.senderAddress},
+          ${order.receiverStore},
           ${order.receiverName},
           ${order.receiverPhone},
           ${order.receiverAddress},
-          ${order.weight},
-          ${order.quantity},
-          ${order.tempZone},
+          ${order.skuCode},
+          ${order.skuName},
+          ${order.skuQuantity},
+          ${order.skuSpec},
           ${order.note}
         )
       `;
@@ -72,7 +70,7 @@ export async function insertOrders(orders: ImportedOrder[]) {
     } catch (error) {
       failed += 1;
       const message = error instanceof Error ? error.message : "未知错误";
-      failures.push(`${order.externalCode || order.receiverName}：${message}`);
+      failures.push(`${order.externalCode || order.skuName}：${message}`);
     }
   }
 
@@ -88,7 +86,7 @@ export async function deleteAllOrders() {
   await ensureOrdersTable();
 
   const result = await sql<{ record_id: string }[]>`
-    delete from orders
+    delete from import_orders
     returning record_id
   `;
 
@@ -111,15 +109,14 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
   type Row = {
     record_id: string;
     external_code: string;
-    sender_name: string;
-    sender_phone: string;
-    sender_address: string;
+    receiver_store: string;
     receiver_name: string;
     receiver_phone: string;
     receiver_address: string;
-    weight: string;
-    quantity: number;
-    temp_zone: string;
+    sku_code: string;
+    sku_name: string;
+    sku_quantity: string;
+    sku_spec: string;
     note: string;
     submitted_at: string;
     created_at: string;
@@ -133,23 +130,23 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
       select
         record_id,
         external_code,
-        sender_name,
-        sender_phone,
-        sender_address,
+        receiver_store,
         receiver_name,
         receiver_phone,
         receiver_address,
-        weight::text,
-        quantity,
-        temp_zone,
+        sku_code,
+        sku_name,
+        sku_quantity::text,
+        sku_spec,
         note,
         submitted_at,
         created_at
-      from orders
+      from import_orders
       where (
         external_code ilike ${likeKeyword}
         or receiver_name ilike ${likeKeyword}
-        or sender_name ilike ${likeKeyword}
+        or receiver_store ilike ${likeKeyword}
+        or sku_name ilike ${likeKeyword}
       )
       and date(submitted_at) = ${dateValue}
       order by submitted_at desc
@@ -159,11 +156,12 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
 
     countRows = await sql<{ count: string }[]>`
       select count(*)::text as count
-      from orders
+      from import_orders
       where (
         external_code ilike ${likeKeyword}
         or receiver_name ilike ${likeKeyword}
-        or sender_name ilike ${likeKeyword}
+        or receiver_store ilike ${likeKeyword}
+        or sku_name ilike ${likeKeyword}
       )
       and date(submitted_at) = ${dateValue}
     `;
@@ -172,23 +170,23 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
       select
         record_id,
         external_code,
-        sender_name,
-        sender_phone,
-        sender_address,
+        receiver_store,
         receiver_name,
         receiver_phone,
         receiver_address,
-        weight::text,
-        quantity,
-        temp_zone,
+        sku_code,
+        sku_name,
+        sku_quantity::text,
+        sku_spec,
         note,
         submitted_at,
         created_at
-      from orders
+      from import_orders
       where (
         external_code ilike ${likeKeyword}
         or receiver_name ilike ${likeKeyword}
-        or sender_name ilike ${likeKeyword}
+        or receiver_store ilike ${likeKeyword}
+        or sku_name ilike ${likeKeyword}
       )
       order by submitted_at desc
       limit ${pageSize}
@@ -197,11 +195,12 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
 
     countRows = await sql<{ count: string }[]>`
       select count(*)::text as count
-      from orders
+      from import_orders
       where (
         external_code ilike ${likeKeyword}
         or receiver_name ilike ${likeKeyword}
-        or sender_name ilike ${likeKeyword}
+        or receiver_store ilike ${likeKeyword}
+        or sku_name ilike ${likeKeyword}
       )
     `;
   } else if (dateValue) {
@@ -209,19 +208,18 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
       select
         record_id,
         external_code,
-        sender_name,
-        sender_phone,
-        sender_address,
+        receiver_store,
         receiver_name,
         receiver_phone,
         receiver_address,
-        weight::text,
-        quantity,
-        temp_zone,
+        sku_code,
+        sku_name,
+        sku_quantity::text,
+        sku_spec,
         note,
         submitted_at,
         created_at
-      from orders
+      from import_orders
       where date(submitted_at) = ${dateValue}
       order by submitted_at desc
       limit ${pageSize}
@@ -230,7 +228,7 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
 
     countRows = await sql<{ count: string }[]>`
       select count(*)::text as count
-      from orders
+      from import_orders
       where date(submitted_at) = ${dateValue}
     `;
   } else {
@@ -238,19 +236,18 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
       select
         record_id,
         external_code,
-        sender_name,
-        sender_phone,
-        sender_address,
+        receiver_store,
         receiver_name,
         receiver_phone,
         receiver_address,
-        weight::text,
-        quantity,
-        temp_zone,
+        sku_code,
+        sku_name,
+        sku_quantity::text,
+        sku_spec,
         note,
         submitted_at,
         created_at
-      from orders
+      from import_orders
       order by submitted_at desc
       limit ${pageSize}
       offset ${offset}
@@ -258,7 +255,7 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
 
     countRows = await sql<{ count: string }[]>`
       select count(*)::text as count
-      from orders
+      from import_orders
     `;
   }
 
@@ -266,15 +263,14 @@ export async function queryOrders({ q, date, page = 1, pageSize = 10 }: HistoryQ
     items: items.map((item) => ({
       recordId: item.record_id,
       externalCode: item.external_code,
-      senderName: item.sender_name,
-      senderPhone: item.sender_phone,
-      senderAddress: item.sender_address,
+      receiverStore: item.receiver_store,
       receiverName: item.receiver_name,
       receiverPhone: item.receiver_phone,
       receiverAddress: item.receiver_address,
-      weight: Number(item.weight),
-      quantity: item.quantity,
-      tempZone: item.temp_zone,
+      skuCode: item.sku_code,
+      skuName: item.sku_name,
+      skuQuantity: Number(item.sku_quantity),
+      skuSpec: item.sku_spec,
       note: item.note,
       submittedAt: item.submitted_at,
       createdAt: item.created_at,

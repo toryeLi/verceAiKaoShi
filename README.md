@@ -1,27 +1,99 @@
-# 多模板 Excel 自动导入下单系统
+# AI 出库单规则导入工作台
 
-基于 `Next.js App Router + TypeScript` 实现，支持多模板 Excel 导入、映射记忆、在线预览编辑、全量校验、导出 Excel、提交入库和历史运单查询。
+基于 `Next.js App Router + TypeScript` 实现，围绕考试题要求提供：
 
-## 功能概览
+- 规则驱动导入
+- `Excel / Word / PDF` 多格式上传
+- AI/启发式规则建议
+- 试解析预览与在线编辑
+- 全量校验、导出、提交入库
+- 历史运单查询
 
-- 支持 `.xlsx / .xls` 上传与拖拽导入123
-- 自动识别不同表头命名、列顺序、说明行、多 Sheet、英文模板、分组表头
-- 支持手动列映射，映射关系写入本地模板记忆
-- 导入后进入类 Excel 预览表格，支持直接编辑、删除行、新增空行
-- 实时校验必填项、手机号、重量、件数、温层
-- 一次性展示全部错误信息
-- 支持当前预览数据导出为 Excel
-- 提交时写入 PostgreSQL 数据库
-- 支持历史运单列表、关键词搜索、日期筛选、分页
+## 当前实现范围
 
-## 技术栈
+这版已经完成题目主链：
 
-- Next.js 16 App Router
-- TypeScript
-- React 19
-- `xlsx`
-- `zod`
-- `postgres`
+- 规则管理：创建、编辑、删除、服务端持久化
+- 多格式入口：`.xlsx / .xls / .docx / .pdf`
+- 规则建议：优先调用大模型，未配置时自动回退到启发式
+- 试解析：按规则输出结构化明细
+- 在线预览：表格编辑、全量错误展示、导出 Excel
+- 提交下单：批量写入 PostgreSQL
+- 历史列表：搜索、日期筛选、分页、清空
+
+## 样例预设规则
+
+已内置一批更贴近 `doc/demos` 的预设规则：
+
+- `样例预设 - 湖南仓汇总单`
+- `样例预设 - 黎明屯配送发货单`
+- `样例预设 - 欢乐牧场矩阵模板`
+- `样例预设 - 黔寨寨 PDF 配送单`
+- `多 Sheet 门店出库单`
+- `卡片式调拨单`
+
+这些规则不是把文件名硬编码进解析逻辑，而是把样例中的结构规律沉淀为规则配置：
+
+- 表头行位置
+- 多 Sheet 遍历
+- 矩阵列展开
+- 卡片边界拆分
+- PDF/纯文本正则提取
+- 顶部/尾部共享信息抽取
+
+## 大模型接入
+
+系统会优先读取以下配置：
+
+```bash
+LLM_API_KEY=
+LLM_API_URL=
+LLM_MODEL=
+```
+
+也兼容：
+
+```bash
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+OPENAI_MODEL=
+```
+
+或：
+
+```bash
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=
+DEEPSEEK_MODEL=
+```
+
+前端页面会显示当前规则建议引擎状态：
+
+- `LLM 已接入`
+- `当前使用启发式`
+
+并展示：
+
+- provider
+- model
+- base URL
+
+## 环境变量
+
+数据库至少配置一个：
+
+```bash
+DATABASE_URL=
+```
+
+也支持：
+
+```bash
+POSTGRES_URL=
+PRISMA_DATABASE_URL=
+```
+
+完整示例见 `.env.example`。
 
 ## 本地启动
 
@@ -33,19 +105,8 @@ npm install
 
 2. 配置环境变量
 
-复制 `.env.example` 为 `.env.local`，填入你自己的数据库连接串。
-
-推荐至少配置一个：
-
 ```bash
-DATABASE_URL=...
-```
-
-系统也兼容：
-
-```bash
-POSTGRES_URL=...
-PRISMA_DATABASE_URL=...
+copy .env.example .env.local
 ```
 
 3. 启动开发环境
@@ -54,92 +115,56 @@ PRISMA_DATABASE_URL=...
 npm run dev
 ```
 
-4. 构建生产版本
+4. 生产构建
 
 ```bash
 npm run build
 ```
 
-## 数据库说明
+## 数据库表
 
-项目首次调用接口时会自动执行建表逻辑，创建：
+项目会自动创建：
 
-- `orders` 表
-- `orders_external_code_unique` 唯一索引
-- `orders_submitted_at_idx` 时间索引
+- `import_orders`
+- `import_rules`
 
-说明：
+其中：
 
-- `external_code` 允许为空
-- 非空 `external_code` 会做唯一约束
+- `import_orders` 保存导入后的结构化明细
+- `import_rules` 保存规则配置 JSON
 
 ## 主要目录
 
 - `src/components/order-workbench.tsx`
-  前端工作台界面
-- `src/lib/excel.ts`
-  Excel 解析与导出
+  前端主工作台
+- `src/lib/import-parser.ts`
+  统一文档抽取与规则解析
+- `src/lib/import-rules.ts`
+  规则预设与规则仓储
+- `src/lib/ai-rule-suggester.ts`
+  大模型规则建议
 - `src/lib/orders.ts`
-  字段定义、自动映射、校验逻辑
+  字段定义与校验
 - `src/lib/orders-repository.ts`
-  数据库读写
-- `src/app/api/orders/route.ts`
-  提交下单接口
-- `src/app/api/orders/duplicates/route.ts`
-  数据库重复编码检测接口
-- `src/app/api/history/route.ts`
-  历史记录查询接口
+  数据入库与历史查询
+- `src/app/api/import-rules/*`
+  规则管理与规则建议接口
+- `src/app/api/import-preview/route.ts`
+  按规则试解析接口
 
-## Vercel 部署
-
-1. 将项目推送到 GitHub / GitLab / Gitee
-2. 在 Vercel 导入仓库
-3. 在 Vercel 项目环境变量中配置：
-
-```bash
-DATABASE_URL=你的数据库连接串
-```
-
-也可以只配：
-
-```bash
-POSTGRES_URL=你的数据库连接串
-```
-
-或：
-
-```bash
-PRISMA_DATABASE_URL=你的数据库连接串
-```
-
-4. 执行部署
-
-## 考试反思题参考
-
-### 1. 这个需求里最容易被忽略的 3 个细节点
-
-1. 模板并不一定从第 1 行开始就是表头。
-原因：很多人默认第一行就是列名，但实际模板可能前面有说明文字、标题行、合并单元格。
-
-2. 外部编码重复不只要检查当前批次，还要检查数据库历史数据。
-原因：只做前端本批次去重很常见，但题目明确要求和已存在数据比较。
-
-3. 错误提示必须一次性列出全部问题，而不是一次只报一个。
-原因：很多表单校验天然是逐项提示，放到批量导入场景就会严重影响修正效率。
-
-### 2. 如果纯人工编码，不借助 AI，大概需要多久
-
-如果从零开始，包含需求拆解、项目搭建、Excel 模板适配、前后端联调、数据库接入、部署和自测，合理预估是 `1.5 到 2.5 天`。
-
-理由：
-
-- Excel 多模板解析和表头识别本身就需要反复测试
-- 在线表格编辑和错误高亮有较多交互细节
-- 数据库、接口、分页、筛选、部署都需要额外时间
-- 真正耗时的不是写页面，而是覆盖边界情况和验收细节
-
-## 当前状态
+## 当前验证结果
 
 - `npm run lint` 已通过
 - `npm run build` 已通过
-- 尚未包含真实线上 URL 和仓库地址，这两项需要在你实际部署后补充
+
+## 说明
+
+当前版本已经补上你刚才要求的两类内容：
+
+1. `doc/demos` 的样例级规则预设
+2. 正式的大模型接入配置、状态展示和启发式回退
+
+如果还要继续往前推，下一步最有价值的是：
+
+- 针对每个 demo 做更细的命中测试和规则微调
+- 增加“规则试解析对比视图”，方便人工确认 AI 生成规则是否可靠

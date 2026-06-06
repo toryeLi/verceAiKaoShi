@@ -1,34 +1,41 @@
-export const TEMP_ZONES = ["常温", "冷藏", "冷冻"] as const;
+export const EXAM_ORDER_FIELDS = [
+  "externalCode",
+  "receiverStore",
+  "receiverName",
+  "receiverPhone",
+  "receiverAddress",
+  "skuCode",
+  "skuName",
+  "skuQuantity",
+  "skuSpec",
+  "note",
+] as const;
 
-export type TempZone = (typeof TEMP_ZONES)[number];
+export type OrderFieldKey = (typeof EXAM_ORDER_FIELDS)[number];
 
-export type OrderFieldKey =
-  | "externalCode"
-  | "senderName"
-  | "senderPhone"
-  | "senderAddress"
-  | "receiverName"
-  | "receiverPhone"
-  | "receiverAddress"
-  | "weight"
-  | "quantity"
-  | "tempZone"
-  | "note";
+export type SupportedFileType = "excel" | "word" | "pdf";
+
+export type RuleMode = "tabular" | "matrix" | "cards" | "plainText";
+
+export type RuleSource = "manual" | "ai" | "heuristic";
 
 export type OrderDraft = {
   id: string;
   originalRowNumber: number;
   externalCode: string;
-  senderName: string;
-  senderPhone: string;
-  senderAddress: string;
+  receiverStore: string;
   receiverName: string;
   receiverPhone: string;
   receiverAddress: string;
-  weight: string;
-  quantity: string;
-  tempZone: string;
+  skuCode: string;
+  skuName: string;
+  skuQuantity: string;
+  skuSpec: string;
   note: string;
+};
+
+export type ImportedOrder = Omit<OrderDraft, "id" | "originalRowNumber" | "skuQuantity"> & {
+  skuQuantity: number;
 };
 
 export type FieldError = {
@@ -42,32 +49,86 @@ export type RowValidation = {
   errors: FieldError[];
 };
 
-export type ImportedOrder = Omit<
-  OrderDraft,
-  "id" | "originalRowNumber" | "weight" | "quantity" | "tempZone"
-> & {
-  weight: number;
-  quantity: number;
-  tempZone: TempZone;
-};
-
 export type ColumnMapping = Partial<Record<OrderFieldKey, string>>;
 
-export type ParseResult = {
-  fileName: string;
-  templateFingerprint: string;
-  detectedSheetName: string;
-  headerRowIndex: number;
-  headers: string[];
-  sourceRows: unknown[][];
-  mapping: ColumnMapping;
-  rows: OrderDraft[];
+export type RuleConfig = {
+  mode: RuleMode;
+  sheetSelection?: "best" | "first" | "all";
+  headerRow?: number | null;
+  scanHeaderRows?: number;
+  headerAliases?: Partial<Record<OrderFieldKey, string[]>>;
+  manualMapping?: ColumnMapping;
+  ignoreKeywords?: string[];
+  rowEndKeywords?: string[];
+  recordSeparator?: string;
+  itemLinePattern?: string;
+  receiverPatterns?: {
+    externalCode?: string;
+    receiverStore?: string;
+    receiverName?: string;
+    receiverPhone?: string;
+    receiverAddress?: string;
+  };
+  sheetTextPatterns?: {
+    externalCode?: string;
+    receiverStore?: string;
+    receiverName?: string;
+    receiverPhone?: string;
+    receiverAddress?: string;
+    note?: string;
+  };
+  staticValues?: Partial<Record<OrderFieldKey, string>>;
+  matrix?: {
+    storeColumnStartAfter?: string;
+    quantityHeaders?: string[];
+  };
+  card?: {
+    separatorKeyword?: string;
+    itemsHeaderKeywords?: string[];
+  };
 };
 
-export type TemplateMemoryRecord = {
-  fingerprint: string;
-  mapping: ColumnMapping;
+export type ImportRule = {
+  id: string;
+  name: string;
+  description: string;
+  fileType: SupportedFileType | "any";
+  source: RuleSource;
+  config: RuleConfig;
+  createdAt: string;
   updatedAt: string;
+};
+
+export type ParseDocumentSummary = {
+  fileName: string;
+  fileType: SupportedFileType;
+  sheetNames: string[];
+  previewText: string;
+  detectedMode: RuleMode;
+  headerCandidates: string[];
+  warnings: string[];
+};
+
+export type ParseResult = {
+  summary: ParseDocumentSummary;
+  rows: OrderDraft[];
+  warnings: string[];
+};
+
+export type RuleSuggestion = {
+  rule: Omit<ImportRule, "id" | "createdAt" | "updatedAt">;
+  summary: ParseDocumentSummary;
+  reasoning: string[];
+  usedModel: string | null;
+  provider: string;
+};
+
+export type ModelStatus = {
+  available: boolean;
+  provider: string;
+  model: string | null;
+  baseUrl: string | null;
+  mode: "llm" | "heuristic";
 };
 
 export type OrderHistoryItem = ImportedOrder & {
