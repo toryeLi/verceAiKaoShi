@@ -129,6 +129,10 @@ export type ModelStatus = {
   model: string | null;
   baseUrl: string | null;
   mode: "llm" | "heuristic";
+  reason?: string | null;
+  envKey?: string | null;
+  envBaseUrl?: string | null;
+  envModel?: string | null;
 };
 
 export type OrderHistoryItem = ImportedOrder & {

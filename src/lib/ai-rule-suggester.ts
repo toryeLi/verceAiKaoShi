@@ -17,28 +17,64 @@ function inferProvider(baseUrl: string) {
   return "custom-compatible";
 }
 
-export function getModelConfigFromEnv() {
-  const apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY;
-  const baseUrl =
-    process.env.LLM_API_URL ||
-    process.env.OPENAI_BASE_URL ||
-    process.env.DEEPSEEK_BASE_URL ||
-    "https://api.openai.com/v1";
-  const model =
-    process.env.LLM_MODEL ||
-    process.env.OPENAI_MODEL ||
-    process.env.DEEPSEEK_MODEL ||
-    "gpt-4.1-mini";
+function firstDefinedEnv(names: string[]) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (typeof value === "string" && value.trim()) {
+      return {
+        name,
+        value: value.trim(),
+      };
+    }
+  }
 
-  if (!apiKey) {
+  return null;
+}
+
+function normalizeBaseUrl(baseUrl: string) {
+  const trimmed = baseUrl.replace(/\/$/, "");
+  if (/\/chat\/completions$/i.test(trimmed)) {
+    return trimmed.replace(/\/chat\/completions$/i, "");
+  }
+  return trimmed;
+}
+
+export function getModelConfigFromEnv() {
+  const keyEnv = firstDefinedEnv([
+    "LLM_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
+  ]);
+  const baseUrlEnv = firstDefinedEnv([
+    "LLM_API_URL",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "DEEPSEEK_BASE_URL",
+    "OPENROUTER_BASE_URL",
+  ]);
+  const modelEnv = firstDefinedEnv([
+    "LLM_MODEL",
+    "OPENAI_MODEL",
+    "DEEPSEEK_MODEL",
+    "OPENROUTER_MODEL",
+  ]);
+
+  if (!keyEnv) {
     return null;
   }
 
+  const baseUrl = normalizeBaseUrl(baseUrlEnv?.value || "https://api.openai.com/v1");
+  const model = modelEnv?.value || "gpt-4.1-mini";
+
   return {
-    apiKey,
-    baseUrl: baseUrl.replace(/\/$/, ""),
+    apiKey: keyEnv.value,
+    baseUrl,
     model,
     provider: inferProvider(baseUrl),
+    envKey: keyEnv.name,
+    envBaseUrl: baseUrlEnv?.name ?? null,
+    envModel: modelEnv?.name ?? null,
   };
 }
 
@@ -51,6 +87,10 @@ export function getModelStatus(): ModelStatus {
       model: null,
       baseUrl: null,
       mode: "heuristic",
+      reason: "missing_api_key",
+      envKey: null,
+      envBaseUrl: null,
+      envModel: null,
     };
   }
 
@@ -60,6 +100,10 @@ export function getModelStatus(): ModelStatus {
     model: config.model,
     baseUrl: config.baseUrl,
     mode: "llm",
+    reason: null,
+    envKey: config.envKey,
+    envBaseUrl: config.envBaseUrl,
+    envModel: config.envModel,
   };
 }
 

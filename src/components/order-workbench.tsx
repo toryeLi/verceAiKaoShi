@@ -1071,6 +1071,8 @@ export function OrderWorkbench() {
           <span className="muted-text text-ellipsis">
             Base URL：{modelStatus?.baseUrl ?? "未配置"}
           </span>
+          {modelStatus?.reason ? <span className="muted-text">Reason：{modelStatus.reason}</span> : null}
+          {modelStatus?.envKey ? <span className="muted-text">Key Env：{modelStatus.envKey}</span> : null}
         </div>
 
         <input
