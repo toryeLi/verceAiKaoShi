@@ -6,7 +6,7 @@ import type { OrderDraft } from "@/types/order";
 
 export function exportDraftsToExcel(rows: OrderDraft[]) {
   const headerLabels = [
-    "外部编码",
+    "运单号",
     "收货门店",
     "收件人姓名",
     "收件人电话",

@@ -13,7 +13,7 @@ export const ORDER_FIELDS: Array<{
   required: boolean;
   placeholder: string;
 }> = [
-  { key: "externalCode", label: "外部编码", required: false, placeholder: "PS2605290033" },
+  { key: "externalCode", label: "运单号", required: false, placeholder: "PS2605290033" },
   { key: "senderStore", label: "发件门店", required: false, placeholder: "武汉仓或发件门店" },
   { key: "senderName", label: "发件人姓名", required: false, placeholder: "张三" },
   { key: "senderPhone", label: "发件人电话", required: false, placeholder: "13900002222" },

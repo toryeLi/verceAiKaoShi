@@ -127,9 +127,15 @@ textarea {
 }
 
 .top-nav-item,
-.topbar-actions span {
+.topbar-actions span,
+.topbar-actions a {
   font-size: 0.92rem;
   opacity: 0.96;
+}
+
+.topbar-actions a {
+  color: inherit;
+  text-decoration: none;
 }
 
 .app-body {

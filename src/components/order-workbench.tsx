@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useDeferredValue, useEffect, useMemo, useRef, useState, useTransition } from "react";
 
 import { exportDraftsToExcel } from "@/lib/excel";
@@ -41,7 +42,11 @@ type RuleFormState = {
   configText: string;
 };
 
-type WorkspaceSection = "rules" | "batch" | "history";
+type WorkspaceSection = "rules" | "batch" | "manual" | "history";
+
+type OrderWorkbenchProps = {
+  initialSection?: WorkspaceSection;
+};
 
 function buildFormState(rule?: ImportRule): RuleFormState {
   if (!rule) {
@@ -120,7 +125,7 @@ function isSameRuleForm(left: RuleFormState, right: RuleFormState) {
   );
 }
 
-export function OrderWorkbench() {
+export function OrderWorkbench({ initialSection = "batch" }: OrderWorkbenchProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const duplicateCheckTimerRef = useRef<number | null>(null);
   const ruleSelectTimerRef = useRef<number | null>(null);
@@ -140,7 +145,7 @@ export function OrderWorkbench() {
   const [suggestion, setSuggestion] = useState<RuleSuggestion | null>(null);
   const [suggestionPreviewRows, setSuggestionPreviewRows] = useState(0);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
-  const [activeSection, setActiveSection] = useState<WorkspaceSection>("batch");
+  const [activeSection, setActiveSection] = useState<WorkspaceSection>(initialSection);
 
   const [history, setHistory] = useState<OrderHistoryItem[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
@@ -197,6 +202,14 @@ export function OrderWorkbench() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "manual" || draftRows.length > 0) {
+      return;
+    }
+
+    fillSingleManualDraft();
+  }, [activeSection, draftRows.length]);
 
   function notifyRequestPending() {
     setToast({ kind: "info", message: "正在请求中，请稍后再试" });
@@ -339,6 +352,106 @@ export function OrderWorkbench() {
       setRuleForm(buildFormState());
     }
     setToast({ kind: "info", message: `已选择文件：${file.name}` });
+  }
+
+  function hasManualContent(row: OrderDraft) {
+    return (
+      [
+        row.externalCode,
+        row.senderStore,
+        row.senderName,
+        row.senderPhone,
+        row.senderAddress,
+        row.receiverStore,
+        row.receiverName,
+        row.receiverPhone,
+        row.receiverAddress,
+        row.skuCode,
+        row.skuName,
+        row.skuQuantity,
+        row.skuSpec,
+        row.note,
+      ].some((value) => value.trim().length > 0) ||
+      row.amount.trim() !== "0" ||
+      row.waybillStatus.trim() !== "imported"
+    );
+  }
+
+  function fillSingleManualDraft() {
+    const next = [makeBlankDraft(1)];
+    setDraftRows(next);
+    scheduleDuplicateCheck(next);
+  }
+
+  function ensureManualDraftRows() {
+    if (draftRows.length > 0) {
+      return;
+    }
+
+    fillSingleManualDraft();
+  }
+
+  function resetToManualDraft() {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    setSelectedFile(null);
+    resetPreviewState();
+    setSuggestion(null);
+    setSuggestionPreviewRows(0);
+
+    if (selectedRuleId === SUGGESTED_RULE_OPTION_ID) {
+      setSelectedRuleId("");
+      setRuleForm(buildFormState());
+    }
+
+    fillSingleManualDraft();
+  }
+
+  function switchSection(nextSection: WorkspaceSection) {
+    if (nextSection !== "manual") {
+      setActiveSection(nextSection);
+      return;
+    }
+
+    if (activeSection === "manual") {
+      ensureManualDraftRows();
+      return;
+    }
+
+    const hasBatchContext = Boolean(
+      selectedFile ||
+        previewResult ||
+        previewFailure ||
+        suggestion ||
+        selectedRuleId === SUGGESTED_RULE_OPTION_ID,
+    );
+
+    if (hasBatchContext) {
+      const confirmed = window.confirm("切换到人工录单将清空当前批量导入草稿，是否继续？");
+      if (!confirmed) {
+        return;
+      }
+      resetToManualDraft();
+      setActiveSection("manual");
+      return;
+    }
+
+    setActiveSection("manual");
+    ensureManualDraftRows();
+  }
+
+  function handleResetManualDraft() {
+    if (draftRows.some(hasManualContent)) {
+      const confirmed = window.confirm("确定清空当前录单草稿并重新开始吗？");
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    resetToManualDraft();
+    setActiveSection("manual");
   }
 
   async function handleSuggestRule() {
@@ -710,6 +823,9 @@ export function OrderWorkbench() {
           }
           setSelectedFile(null);
           resetPreviewState();
+          if (activeSection === "manual") {
+            fillSingleManualDraft();
+          }
         }
 
         await refreshHistory(1, historyKeyword, historyDate);
@@ -783,6 +899,14 @@ export function OrderWorkbench() {
       chips: ["文件导入", "在线校验", "批量提交"],
     },
     {
+      key: "manual",
+      label: "人工录单",
+      eyebrow: "Manual Entry",
+      title: "人工录单工作台",
+      description: "直接按运单字段人工补录数据，无需上传文件，提交链路与批量导入完全一致。",
+      chips: ["人工录入", "实时校验", "直接提交"],
+    },
+    {
       key: "history",
       label: "已导入运单",
       eyebrow: "Imported Orders",
@@ -795,7 +919,7 @@ export function OrderWorkbench() {
   const statusCards = [
     { label: "当前文件", value: selectedFile?.name ?? "未选择" },
     { label: "当前规则", value: selectedRule?.name ?? suggestion?.rule.name ?? "未选择" },
-    { label: "校验状态", value: draftRows.length ? validationSummary : "等待试解析" },
+    { label: "校验状态", value: draftRows.length ? validationSummary : activeSection === "manual" ? "等待录单" : "等待试解析" },
     { label: "规则建议引擎", value: modelStatus?.mode === "llm" ? modelStatus.provider : "启发式回退" },
   ];
 
@@ -805,6 +929,206 @@ export function OrderWorkbench() {
     }
 
     return window.confirm("当前规则编辑内容尚未保存，继续操作将丢失修改。是否继续？");
+  }
+
+  function renderDraftEditorPanel(options: {
+    title: string;
+    description: string;
+    emptyMessage: string;
+    showPreviewSummary?: boolean;
+    showResetAction?: boolean;
+  }) {
+    return (
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>{options.title}</h2>
+            <p>{options.description}</p>
+          </div>
+          <div className="button-row">
+            <button className="ghost-button" type="button" onClick={addBlankRow}>
+              新增空行
+            </button>
+            {options.showResetAction ? (
+              <button className="ghost-button" type="button" onClick={handleResetManualDraft}>
+                清空重录
+              </button>
+            ) : null}
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={draftRows.length === 0}
+              onClick={() => exportDraftsToExcel(draftRows)}
+            >
+              导出 Excel
+            </button>
+          </div>
+        </div>
+
+        {options.showPreviewSummary && previewResult ? (
+          <div className="summary-grid">
+            <div className="summary-card">
+              <span>文件类型</span>
+              <strong>{previewResult.summary.fileType}</strong>
+            </div>
+            <div className="summary-card">
+              <span>识别模式</span>
+              <strong>{previewResult.summary.detectedMode}</strong>
+            </div>
+            <div className="summary-card">
+              <span>试解析行数</span>
+              <strong>{previewResult.rows.length}</strong>
+            </div>
+          </div>
+        ) : null}
+
+        {options.showPreviewSummary && previewResult?.warnings.length ? (
+          <div className="warning-box">
+            <strong>试解析提示</strong>
+            <ul className="reason-list">
+              {previewResult.warnings.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        {options.showPreviewSummary && previewFailure ? (
+          <div className="warning-box preview-failure-box">
+            <strong>试解析失败</strong>
+            <div className="failure-meta">
+              <span>文件：{previewFailure.fileName}</span>
+              <span>类型：{previewFailure.fileType}</span>
+              <span>规则：{previewFailure.ruleName}</span>
+              <span>来源：{previewFailure.ruleSource}</span>
+            </div>
+            <p className="failure-message">{previewFailure.message}</p>
+            {previewFailure.previewText ? (
+              <textarea className="failure-preview" readOnly rows={10} value={previewFailure.previewText} />
+            ) : null}
+            <div className="button-row">
+              <button className="ghost-button" type="button" onClick={() => switchSection("rules")}>
+                去规则管理
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="table-shell">
+          <table className="order-table">
+            <thead>
+              <tr>
+                <th>行号</th>
+                {ORDER_FIELDS.map((field) => (
+                  <th key={field.key}>{field.required ? `${field.label} *` : field.label}</th>
+                ))}
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {draftRows.length === 0 ? (
+                <tr>
+                  <td colSpan={ORDER_FIELDS.length + 2} className="empty-cell">
+                    {options.emptyMessage}
+                  </td>
+                </tr>
+              ) : (
+                draftRows.map((row, index) => {
+                  const rowErrors = validationMap.get(row.id) ?? new Map<string, string>();
+                  return (
+                    <tr key={row.id} className={rowErrors.size > 0 ? "row-error" : ""}>
+                      <td>{row.originalRowNumber || index + 1}</td>
+                      {ORDER_FIELDS.map((field) => {
+                        const error = rowErrors.get(field.key);
+                        return (
+                          <td key={field.key}>
+                            <input
+                              className={error ? "cell-input input-error" : "cell-input"}
+                              value={row[field.key]}
+                              placeholder={field.placeholder}
+                              title={error}
+                              onChange={(event) =>
+                                updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
+                              }
+                            />
+                            {error ? <span className="inline-error">{error}</span> : null}
+                          </td>
+                        );
+                      })}
+                      <td>
+                        <button className="danger-link" type="button" onClick={() => removeRow(row.id)}>
+                          删除
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="error-board">
+          <div className="error-board-head">
+            <h3>全量错误列表</h3>
+            <span className="muted-text">{validationSummary}</span>
+          </div>
+          {validationState.allErrors.length === 0 ? (
+            <p className="muted-text">当前没有错误。</p>
+          ) : (
+            <div className="error-board-body">
+              <ul>
+                {validationState.allErrors.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </section>
+    );
+  }
+
+  function renderSubmitPanel(options: {
+    title: string;
+    description: string;
+    submitLabel: string;
+  }) {
+    return (
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <h2>{options.title}</h2>
+            <p>{options.description}</p>
+          </div>
+          <button className="primary-button" type="button" disabled={isSubmitting} onClick={() => void handleSubmit()}>
+            {isSubmitting ? "提交中..." : options.submitLabel}
+          </button>
+        </div>
+
+        <div className="submit-bar">
+          <div className="progress-meta">
+            <span>提交进度</span>
+            <span>
+              {submitProgress.total > 0
+                ? `${submitProgress.completed}/${submitProgress.total}`
+                : "未开始"}
+            </span>
+          </div>
+          <div className="progress-bar">
+            <div
+              className="progress-value warm"
+              style={{
+                width:
+                  submitProgress.total > 0
+                    ? `${(submitProgress.completed / submitProgress.total) * 100}%`
+                    : "0%",
+              }}
+            />
+          </div>
+        </div>
+      </section>
+    );
   }
 
   return (
@@ -825,6 +1149,8 @@ export function OrderWorkbench() {
           ))}
         </nav>
         <div className="topbar-actions">
+          <Link href="/">工作台首页</Link>
+          <Link href="/manual-entry">人工录单页</Link>
           <span>返回旧版</span>
           <span>快捷脱离</span>
           <span>消息</span>
@@ -846,7 +1172,7 @@ export function OrderWorkbench() {
                 key={item.key}
                 type="button"
                 className={activeSection === item.key ? "sidebar-item active" : "sidebar-item"}
-                onClick={() => setActiveSection(item.key)}
+                onClick={() => switchSection(item.key)}
               >
                 {item.label}
                 <small>{item.eyebrow}</small>
@@ -862,7 +1188,7 @@ export function OrderWorkbench() {
                 key={item.key}
                 type="button"
                 className={activeSection === item.key ? "workspace-tab current" : "workspace-tab"}
-                onClick={() => setActiveSection(item.key)}
+                onClick={() => switchSection(item.key)}
               >
                 {item.label}
               </button>
@@ -1192,182 +1518,53 @@ export function OrderWorkbench() {
         ) : null}
                     </section>
 
+                    {renderDraftEditorPanel({
+                      title: "试解析结果与在线编辑",
+                      description: "所有错误一次性展示。可新增空行、删除行、在线修正后导出或提交。",
+                      emptyMessage: "暂无试解析结果。",
+                      showPreviewSummary: true,
+                    })}
+
+                    {renderSubmitPanel({
+                      title: "提交下单",
+                      description: "有错误时禁止提交。提交成功后写入数据库，并可在历史列表中继续检索。",
+                      submitLabel: "提交下单",
+                    })}
+                  </>
+                ) : null}
+
+                {activeSection === "manual" ? (
+                  <>
                     <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>试解析结果与在线编辑</h2>
-            <p>所有错误一次性展示。可新增空行、删除行、在线修正后导出或提交。</p>
-          </div>
-          <div className="button-row">
-            <button className="ghost-button" type="button" onClick={addBlankRow}>
-              新增空行
-            </button>
-            <button
-              className="ghost-button"
-              type="button"
-              disabled={draftRows.length === 0}
-              onClick={() => exportDraftsToExcel(draftRows)}
-            >
-              导出 Excel
-            </button>
-          </div>
-        </div>
+                      <div className="panel-header">
+                        <div>
+                          <h2>人工录单</h2>
+                          <p>无需上传文件，直接按运单字段录入数据，校验通过后即可写入已导入运单列表。</p>
+                        </div>
+                      </div>
 
-        {previewResult ? (
-          <div className="summary-grid">
-            <div className="summary-card">
-              <span>文件类型</span>
-              <strong>{previewResult.summary.fileType}</strong>
-            </div>
-            <div className="summary-card">
-              <span>识别模式</span>
-              <strong>{previewResult.summary.detectedMode}</strong>
-            </div>
-            <div className="summary-card">
-              <span>试解析行数</span>
-              <strong>{previewResult.rows.length}</strong>
-            </div>
-          </div>
-        ) : null}
-
-        {previewResult?.warnings.length ? (
-          <div className="warning-box">
-            <strong>试解析提示</strong>
-            <ul className="reason-list">
-              {previewResult.warnings.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-
-        {previewFailure ? (
-          <div className="warning-box preview-failure-box">
-            <strong>试解析失败</strong>
-            <div className="failure-meta">
-              <span>文件：{previewFailure.fileName}</span>
-              <span>类型：{previewFailure.fileType}</span>
-              <span>规则：{previewFailure.ruleName}</span>
-              <span>来源：{previewFailure.ruleSource}</span>
-            </div>
-            <p className="failure-message">{previewFailure.message}</p>
-            {previewFailure.previewText ? (
-              <textarea className="failure-preview" readOnly rows={10} value={previewFailure.previewText} />
-            ) : null}
-            <div className="button-row">
-              <button className="ghost-button" type="button" onClick={() => setActiveSection("rules")}>
-                去规则管理
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        <div className="table-shell">
-          <table className="order-table">
-            <thead>
-              <tr>
-                <th>行号</th>
-                {ORDER_FIELDS.map((field) => (
-                  <th key={field.key}>{field.label}</th>
-                ))}
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {draftRows.length === 0 ? (
-                <tr>
-                  <td colSpan={ORDER_FIELDS.length + 2} className="empty-cell">
-                    暂无试解析结果。
-                  </td>
-                </tr>
-              ) : (
-                draftRows.map((row, index) => {
-                  const rowErrors = validationMap.get(row.id) ?? new Map<string, string>();
-                  return (
-                    <tr key={row.id} className={rowErrors.size > 0 ? "row-error" : ""}>
-                      <td>{row.originalRowNumber || index + 1}</td>
-                      {ORDER_FIELDS.map((field) => {
-                        const error = rowErrors.get(field.key);
-                        return (
-                          <td key={field.key}>
-                            <input
-                              className={error ? "cell-input input-error" : "cell-input"}
-                              value={row[field.key]}
-                              placeholder={field.placeholder}
-                              title={error}
-                              onChange={(event) =>
-                                updateDraft(row.id, field.key as keyof OrderDraft, event.target.value)
-                              }
-                            />
-                            {error ? <span className="inline-error">{error}</span> : null}
-                          </td>
-                        );
-                      })}
-                      <td>
-                        <button className="danger-link" type="button" onClick={() => removeRow(row.id)}>
-                          删除
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="error-board">
-          <div className="error-board-head">
-            <h3>全量错误列表</h3>
-            <span className="muted-text">{validationSummary}</span>
-          </div>
-          {validationState.allErrors.length === 0 ? (
-            <p className="muted-text">当前没有错误。</p>
-          ) : (
-            <div className="error-board-body">
-              <ul>
-                {validationState.allErrors.map((message) => (
-                  <li key={message}>{message}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
+                      <div className="warning-box">
+                        <strong>录单约束</strong>
+                        <ul className="reason-list">
+                          <li>必填字段：SKU 物品编码、SKU 物品名称、SKU 发货数量。</li>
+                          <li>收货信息至少填写一组：收货门店，或收件人姓名 + 电话 + 地址。</li>
+                          <li>运单号如填写，将参与重复校验，并作为“已导入运单”列表的主搜索字段。</li>
+                        </ul>
+                      </div>
                     </section>
 
-                    <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>提交下单</h2>
-            <p>有错误时禁止提交。提交成功后写入数据库，并可在历史列表中继续检索。</p>
-          </div>
-          <button className="primary-button" type="button" disabled={isSubmitting} onClick={() => void handleSubmit()}>
-            {isSubmitting ? "提交中..." : "提交下单"}
-          </button>
-        </div>
+                    {renderDraftEditorPanel({
+                      title: "录单明细编辑",
+                      description: "支持逐行人工补录、在线修正、导出备份与实时校验。",
+                      emptyMessage: "暂无录单数据，请先新增一行。",
+                      showResetAction: true,
+                    })}
 
-        <div className="submit-bar">
-          <div className="progress-meta">
-            <span>提交进度</span>
-            <span>
-              {submitProgress.total > 0
-                ? `${submitProgress.completed}/${submitProgress.total}`
-                : "未开始"}
-            </span>
-          </div>
-          <div className="progress-bar">
-            <div
-              className="progress-value warm"
-              style={{
-                width:
-                  submitProgress.total > 0
-                    ? `${(submitProgress.completed / submitProgress.total) * 100}%`
-                    : "0%",
-              }}
-            />
-          </div>
-        </div>
-                    </section>
+                    {renderSubmitPanel({
+                      title: "提交录单",
+                      description: "人工录单与批量导入复用同一提交接口，校验通过后即可入库。",
+                      submitLabel: "提交录单",
+                    })}
                   </>
                 ) : null}
 
@@ -1376,12 +1573,12 @@ export function OrderWorkbench() {
         <div className="panel-header">
           <div>
             <h2>已导入运单</h2>
-            <p>从数据库读取历史记录，支持按外部编码、门店、收件人、商品名和日期筛选。</p>
+            <p>从数据库读取历史记录，支持按运单号、门店、收件人、商品名和日期筛选。</p>
           </div>
           <div className="history-filters">
             <input
               value={historyKeyword}
-              placeholder="搜外部编码 / 门店 / 收件人 / SKU"
+              placeholder="搜运单号 / 门店 / 收件人 / SKU"
               onChange={(event) => setHistoryKeyword(event.target.value)}
             />
             <input value={historyDate} type="date" onChange={(event) => setHistoryDate(event.target.value)} />
@@ -1409,7 +1606,7 @@ export function OrderWorkbench() {
           <table className="history-table">
             <thead>
               <tr>
-                <th>外部编码</th>
+                <th>运单号</th>
                 <th>发件摘要</th>
                 <th>收件摘要</th>
                 <th>SKU编码</th>
