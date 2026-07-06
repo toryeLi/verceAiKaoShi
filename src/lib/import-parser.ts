@@ -34,7 +34,7 @@ type ExtractedDocument =
       summary: ParseDocumentSummary;
     };
 
-const FIELD_ALIASES: Record<OrderFieldKey, string[]> = {
+const FIELD_ALIASES: Partial<Record<OrderFieldKey, string[]>> = {
   externalCode: ["外部编码", "外部订单号", "配送单号", "单号", "客户单号", "配送汇总单号"],
   receiverStore: ["收货门店", "收货机构", "门店", "调入门店", "收货门店名称"],
   receiverName: ["收件人", "收货人", "联系人", "收货人姓名"],
@@ -45,6 +45,26 @@ const FIELD_ALIASES: Record<OrderFieldKey, string[]> = {
   skuQuantity: ["SKU发货数量", "发货数量", "出库数量", "数量", "应发数量"],
   skuSpec: ["SKU规格型号", "规格型号", "规格", "型号"],
   note: ["备注", "物品备注", "单据备注"],
+};
+
+const ALL_FIELD_ALIASES: Record<OrderFieldKey, string[]> = {
+  externalCode: [...(FIELD_ALIASES.externalCode ?? []), "外部编码", "外部订单号", "配送单号", "单号", "客户单号", "配送汇总单号"],
+  senderStore: ["发件门店", "发货门店", "发件机构", "发件仓库", "发货仓库"],
+  senderName: ["发件人", "发货人", "寄件人", "发件人姓名"],
+  senderPhone: ["发件人电话", "发货人电话", "寄件人电话", "发件电话"],
+  senderAddress: ["发件地址", "发货地址", "寄件地址"],
+  receiverStore: [...(FIELD_ALIASES.receiverStore ?? []), "收货门店", "收货机构", "门店", "调入门店", "收货门店名称"],
+  receiverName: [...(FIELD_ALIASES.receiverName ?? []), "收件人", "收货人", "联系人", "收货人姓名"],
+  receiverPhone: [...(FIELD_ALIASES.receiverPhone ?? []), "收件人电话", "收货电话", "电话", "手机号", "联系电话"],
+  receiverAddress: [...(FIELD_ALIASES.receiverAddress ?? []), "收件人地址", "收货地址", "地址"],
+  amount: ["运单金额", "金额", "货款金额", "合计金额", "应收金额"],
+  waybillStatus: ["运单状态", "状态", "配送状态", "物流状态"],
+  sourceUpdatedAt: ["来源更新时间", "更新时间", "同步时间", "数据更新时间"],
+  skuCode: [...(FIELD_ALIASES.skuCode ?? []), "SKU物品编码", "物品编码", "SKU编码", "外部商品编码", "SKU条码"],
+  skuName: [...(FIELD_ALIASES.skuName ?? []), "SKU物品名称", "物品名称", "SKU名称", "商品名称"],
+  skuQuantity: [...(FIELD_ALIASES.skuQuantity ?? []), "SKU发货数量", "发货数量", "出库数量", "数量", "应发数量"],
+  skuSpec: [...(FIELD_ALIASES.skuSpec ?? []), "SKU规格型号", "规格型号", "规格", "型号"],
+  note: [...(FIELD_ALIASES.note ?? []), "备注", "物品备注", "单据备注"],
 };
 
 function normalizeText(value: unknown) {
@@ -71,13 +91,13 @@ function buildSheetText(rows: string[][]) {
 function buildHeaderMapping(headers: string[], manualMapping?: ColumnMapping, headerAliases?: RuleConfig["headerAliases"]) {
   const mapping: ColumnMapping = { ...(manualMapping ?? {}) };
 
-  for (const field of Object.keys(FIELD_ALIASES) as OrderFieldKey[]) {
+  for (const field of Object.keys(ALL_FIELD_ALIASES) as OrderFieldKey[]) {
     if (mapping[field]) {
       continue;
     }
 
     const aliasSet = new Set(
-      [...FIELD_ALIASES[field], ...(headerAliases?.[field] ?? [])].map((item) => normalizeText(item)),
+      [...ALL_FIELD_ALIASES[field], ...(headerAliases?.[field] ?? [])].map((item) => normalizeText(item)),
     );
 
     const match = headers.find((header) => aliasSet.has(normalizeText(header)));
@@ -96,7 +116,7 @@ function scoreHeaderRow(row: string[], config: RuleConfig) {
     if (!normalized) {
       continue;
     }
-    for (const aliases of Object.values(FIELD_ALIASES)) {
+    for (const aliases of Object.values(ALL_FIELD_ALIASES)) {
       if (aliases.some((alias) => normalizeText(alias) === normalized)) {
         score += 2;
         break;
@@ -304,10 +324,17 @@ function rowsFromTabularSheet(sheetName: string, rows: string[][], config: RuleC
   const sheetText = buildSheetText(rows);
   const sharedValues = {
     externalCode: firstCapture(sheetText, config.sheetTextPatterns?.externalCode),
+    senderStore: firstCapture(sheetText, config.sheetTextPatterns?.senderStore),
+    senderName: firstCapture(sheetText, config.sheetTextPatterns?.senderName),
+    senderPhone: firstCapture(sheetText, config.sheetTextPatterns?.senderPhone),
+    senderAddress: firstCapture(sheetText, config.sheetTextPatterns?.senderAddress),
     receiverStore: firstCapture(sheetText, config.sheetTextPatterns?.receiverStore),
     receiverName: firstCapture(sheetText, config.sheetTextPatterns?.receiverName),
     receiverPhone: firstCapture(sheetText, config.sheetTextPatterns?.receiverPhone),
     receiverAddress: firstCapture(sheetText, config.sheetTextPatterns?.receiverAddress),
+    amount: firstCapture(sheetText, config.sheetTextPatterns?.amount),
+    waybillStatus: firstCapture(sheetText, config.sheetTextPatterns?.waybillStatus),
+    sourceUpdatedAt: firstCapture(sheetText, config.sheetTextPatterns?.sourceUpdatedAt),
     note: firstCapture(sheetText, config.sheetTextPatterns?.note),
   };
 
@@ -541,10 +568,19 @@ function rowsFromPlainText(text: string, config: RuleConfig) {
 
     const baseDraft = makeBlankDraft(recordIndex + 1);
     baseDraft.externalCode = firstCapture(trimmedRecord, config.receiverPatterns?.externalCode);
+    baseDraft.senderStore = firstCapture(trimmedRecord, config.receiverPatterns?.senderStore);
+    baseDraft.senderName = firstCapture(trimmedRecord, config.receiverPatterns?.senderName);
+    baseDraft.senderPhone = firstCapture(trimmedRecord, config.receiverPatterns?.senderPhone);
+    baseDraft.senderAddress = firstCapture(trimmedRecord, config.receiverPatterns?.senderAddress);
     baseDraft.receiverStore = firstCapture(trimmedRecord, config.receiverPatterns?.receiverStore);
     baseDraft.receiverName = firstCapture(trimmedRecord, config.receiverPatterns?.receiverName);
     baseDraft.receiverPhone = firstCapture(trimmedRecord, config.receiverPatterns?.receiverPhone);
     baseDraft.receiverAddress = firstCapture(trimmedRecord, config.receiverPatterns?.receiverAddress);
+    baseDraft.amount = firstCapture(trimmedRecord, config.receiverPatterns?.amount) || baseDraft.amount;
+    baseDraft.waybillStatus =
+      firstCapture(trimmedRecord, config.receiverPatterns?.waybillStatus) || baseDraft.waybillStatus;
+    baseDraft.sourceUpdatedAt =
+      firstCapture(trimmedRecord, config.receiverPatterns?.sourceUpdatedAt) || baseDraft.sourceUpdatedAt;
 
     const matches = [...trimmedRecord.matchAll(itemPattern)];
     for (const match of matches) {
@@ -635,10 +671,17 @@ export async function buildHeuristicSuggestion(fileName: string, arrayBuffer: Ar
         "(?<index>\\d+)[\\.、]\\s*(?<skuCode>[^|｜]+)[|｜](?<skuName>[^|｜]+)[|｜](?<skuSpec>[^|｜]*)[|｜](?<skuQuantity>\\d+(?:\\.\\d+)?)",
       receiverPatterns: {
         externalCode: "(?:外部编码|配送单号|单号)[:：]\\s*(?<value>[^\\n]+)",
+        senderStore: "(?:发件门店|发货门店|发件机构|发货仓库|发件仓库)[:：]\\s*(?<value>[^\\n]+)",
+        senderName: "(?:发件人|发货人|寄件人)[:：]\\s*(?<value>[^\\n]+)",
+        senderPhone: "(?:发件电话|发货电话|寄件人电话|发件人电话)[:：]\\s*(?<value>1\\d{10})",
+        senderAddress: "(?:发件地址|发货地址|寄件地址)[:：]\\s*(?<value>[^\\n]+)",
         receiverStore: "(?:收货门店|门店)[:：]\\s*(?<value>[^\\n]+)",
         receiverName: "(?:收件人|收货人)[:：]\\s*(?<value>[^\\n]+)",
-        receiverPhone: "(?:电话|手机号)[:：]\\s*(?<value>1\\d{10})",
+        receiverPhone: "(?:电话|手机号|收货电话)[:：]\\s*(?<value>1\\d{10})",
         receiverAddress: "(?:地址|收货地址)[:：]\\s*(?<value>[^\\n]+)",
+        amount: "(?:运单金额|金额|货款金额|合计金额|应收金额)[:：]\\s*(?<value>\\d+(?:\\.\\d{1,2})?)",
+        waybillStatus: "(?:运单状态|状态|配送状态|物流状态)[:：]\\s*(?<value>[^\\n]+)",
+        sourceUpdatedAt: "(?:来源更新时间|更新时间|同步时间|数据更新时间)[:：]\\s*(?<value>[^\\n]+)",
       },
     };
   } else {

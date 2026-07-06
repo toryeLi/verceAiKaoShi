@@ -11,7 +11,8 @@ export async function POST(request: NextRequest) {
 
     const duplicates = await getExistingCodes(codes);
     return NextResponse.json({ duplicates });
-  } catch {
-    return NextResponse.json({ duplicates: [] }, { status: 200 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Waybill verify failed";
+    return NextResponse.json({ message, duplicates: [] }, { status: 500 });
   }
 }

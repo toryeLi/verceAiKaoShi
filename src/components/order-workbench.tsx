@@ -1410,17 +1410,21 @@ export function OrderWorkbench() {
             <thead>
               <tr>
                 <th>外部编码</th>
-                <th>门店/收件人</th>
+                <th>发件摘要</th>
+                <th>收件摘要</th>
                 <th>SKU编码</th>
                 <th>SKU名称</th>
                 <th>数量</th>
+                <th>金额</th>
+                <th>运单状态</th>
+                <th>来源更新时间</th>
                 <th>提交时间</th>
               </tr>
             </thead>
             <tbody>
               {history.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="empty-cell">
+                  <td colSpan={10} className="empty-cell">
                     {isHistoryLoading ? "加载中..." : "暂无历史记录"}
                   </td>
                 </tr>
@@ -1428,10 +1432,14 @@ export function OrderWorkbench() {
                 history.map((item) => (
                   <tr key={item.recordId}>
                     <td>{item.externalCode || "-"}</td>
+                    <td>{item.senderStore || item.senderName || "-"}</td>
                     <td>{item.receiverStore || item.receiverName || "-"}</td>
                     <td>{item.skuCode}</td>
                     <td>{item.skuName}</td>
                     <td>{item.skuQuantity}</td>
+                    <td>{item.amount.toFixed(2)}</td>
+                    <td>{item.waybillStatus || "-"}</td>
+                    <td>{item.sourceUpdatedAt ? new Date(item.sourceUpdatedAt).toLocaleString("zh-CN") : "-"}</td>
                     <td>{new Date(item.submittedAt).toLocaleString("zh-CN")}</td>
                   </tr>
                 ))

@@ -11,6 +11,9 @@ export async function GET(request: NextRequest) {
     const pageSize = Number(searchParams.get("pageSize") ?? "10");
 
     const result = await queryOrders({ q, date, page, pageSize });
+    if ("message" in result && result.message) {
+      return NextResponse.json(result, { status: 500 });
+    }
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "查询失败";

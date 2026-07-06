@@ -1,9 +1,16 @@
 export const EXAM_ORDER_FIELDS = [
   "externalCode",
+  "senderStore",
+  "senderName",
+  "senderPhone",
+  "senderAddress",
   "receiverStore",
   "receiverName",
   "receiverPhone",
   "receiverAddress",
+  "amount",
+  "waybillStatus",
+  "sourceUpdatedAt",
   "skuCode",
   "skuName",
   "skuQuantity",
@@ -23,10 +30,17 @@ export type OrderDraft = {
   id: string;
   originalRowNumber: number;
   externalCode: string;
+  senderStore: string;
+  senderName: string;
+  senderPhone: string;
+  senderAddress: string;
   receiverStore: string;
   receiverName: string;
   receiverPhone: string;
   receiverAddress: string;
+  amount: string;
+  waybillStatus: string;
+  sourceUpdatedAt: string;
   skuCode: string;
   skuName: string;
   skuQuantity: string;
@@ -34,8 +48,9 @@ export type OrderDraft = {
   note: string;
 };
 
-export type ImportedOrder = Omit<OrderDraft, "id" | "originalRowNumber" | "skuQuantity"> & {
+export type ImportedOrder = Omit<OrderDraft, "id" | "originalRowNumber" | "skuQuantity" | "amount"> & {
   skuQuantity: number;
+  amount: number;
 };
 
 export type FieldError = {
@@ -64,17 +79,31 @@ export type RuleConfig = {
   itemLinePattern?: string;
   receiverPatterns?: {
     externalCode?: string;
+    senderStore?: string;
+    senderName?: string;
+    senderPhone?: string;
+    senderAddress?: string;
     receiverStore?: string;
     receiverName?: string;
     receiverPhone?: string;
     receiverAddress?: string;
+    amount?: string;
+    waybillStatus?: string;
+    sourceUpdatedAt?: string;
   };
   sheetTextPatterns?: {
     externalCode?: string;
+    senderStore?: string;
+    senderName?: string;
+    senderPhone?: string;
+    senderAddress?: string;
     receiverStore?: string;
     receiverName?: string;
     receiverPhone?: string;
     receiverAddress?: string;
+    amount?: string;
+    waybillStatus?: string;
+    sourceUpdatedAt?: string;
     note?: string;
   };
   staticValues?: Partial<Record<OrderFieldKey, string>>;

@@ -2,6 +2,8 @@ import postgres from "postgres";
 
 declare global {
   var __sql__: ReturnType<typeof postgres> | undefined;
+  var __orders_schema_ready__: Promise<boolean> | undefined;
+  var __import_rules_schema_ready__: Promise<boolean> | undefined;
 }
 
 export function getDb() {
@@ -25,7 +27,7 @@ export function getDb() {
   return global.__sql__;
 }
 
-export async function ensureOrdersTable() {
+async function runOrdersMigrations() {
   const sql = getDb();
   if (!sql) {
     return false;
@@ -35,10 +37,17 @@ export async function ensureOrdersTable() {
     create table if not exists import_orders (
       record_id text primary key,
       external_code text not null default '',
+      sender_store text not null default '',
+      sender_name text not null default '',
+      sender_phone text not null default '',
+      sender_address text not null default '',
       receiver_store text not null default '',
       receiver_name text not null default '',
       receiver_phone text not null default '',
       receiver_address text not null default '',
+      amount numeric(12, 2) not null default 0,
+      waybill_status text not null default 'imported',
+      source_updated_at timestamptz not null default now(),
       sku_code text not null,
       sku_name text not null,
       sku_quantity numeric(12, 2) not null,
@@ -47,6 +56,17 @@ export async function ensureOrdersTable() {
       submitted_at timestamptz not null default now(),
       created_at timestamptz not null default now()
     );
+  `;
+
+  await sql`
+    alter table import_orders
+    add column if not exists sender_store text not null default '',
+    add column if not exists sender_name text not null default '',
+    add column if not exists sender_phone text not null default '',
+    add column if not exists sender_address text not null default '',
+    add column if not exists amount numeric(12, 2) not null default 0,
+    add column if not exists waybill_status text not null default 'imported',
+    add column if not exists source_updated_at timestamptz not null default now()
   `;
 
   await sql`
@@ -63,7 +83,18 @@ export async function ensureOrdersTable() {
   return true;
 }
 
-export async function ensureImportRulesTable() {
+export async function ensureOrdersTable() {
+  if (!global.__orders_schema_ready__) {
+    global.__orders_schema_ready__ = runOrdersMigrations().catch((error) => {
+      global.__orders_schema_ready__ = undefined;
+      throw error;
+    });
+  }
+
+  return global.__orders_schema_ready__;
+}
+
+async function runImportRulesMigrations() {
   const sql = getDb();
   if (!sql) {
     return false;
@@ -88,4 +119,15 @@ export async function ensureImportRulesTable() {
   `;
 
   return true;
+}
+
+export async function ensureImportRulesTable() {
+  if (!global.__import_rules_schema_ready__) {
+    global.__import_rules_schema_ready__ = runImportRulesMigrations().catch((error) => {
+      global.__import_rules_schema_ready__ = undefined;
+      throw error;
+    });
+  }
+
+  return global.__import_rules_schema_ready__;
 }
